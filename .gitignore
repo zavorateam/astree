@@ -1,0 +1,18 @@
+# Build artifacts
+/target/
+/build/
+/dist/
+
+# Python cache & env
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+.venv/
+env/
+venv/
+
+# Stray files & OS junk
+!
+.DS_Store

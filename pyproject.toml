@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astree"
+version = "0.2.0"
+description = "Reverse-tree CLI generator with smart shebangs, templates and safe dumper."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "vaultek" }]
+keywords = ["cli", "tree", "scaffold", "devtools", "generator"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Topic :: Software Development :: Code Generators"
+]
+
+[project.scripts]
+astree = "astree.cli:main"
+
+[tool.setuptools.package_dir]
+"" = "python/src"
+
+[tool.pytest.ini_options]
+pythonpath = ["python/src"]
+testpaths = ["python/tests"]
