@@ -9,7 +9,7 @@ fn test_cli_version() {
         .expect("Failed to execute astree");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("astree v0.2.0"));
+    assert!(stdout.contains("astree v0.2.2"));
 }
 
 #[test]

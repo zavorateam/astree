@@ -129,7 +129,7 @@ pub fn load_gitignore(root: &Path) -> Vec<String> {
         for line in reader.lines().map_while(Result::ok) {
             let trimmed = line.trim();
             if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                patterns.push(trimmed.trim_end_matches('/').to_string());
+                patterns.push(trimmed.trim_matches('/').to_string());
             }
         }
     }
@@ -223,7 +223,7 @@ pub fn dump_dir(
         let is_last = i == count - 1;
         let connector = if is_last { "└── " } else { "├── " };
         let next_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
-        let name = p.file_name().unwrap_or_default().to_string_lossy();
+        let name = p.file_name().unwrap().to_string_lossy();
 
         let size_tag = if options.show_sizes {
             let meta = p.symlink_metadata().ok();

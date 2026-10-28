@@ -82,6 +82,7 @@ def main():
         description="Turn text file tree representations into real filesystems."
     )
     parser.add_argument("file", nargs="?", default=None, help="Input tree file or '-' for stdin")
+    parser.add_argument("-t", "--target-dir", default=".", help="Target directory for scaffolding (default: .)")
     parser.add_argument("-c", "--clip", action="store_true", help="Read tree from clipboard")
     parser.add_argument("-d", "--dry-run", action="store_true", help="Preview actions without writing to disk")
     parser.add_argument("-f", "--force", action="store_true", help="Safely overwrite existing files")
@@ -107,7 +108,8 @@ def main():
 
     lines = clean_input_lines(raw_text)
     try:
-        scaffold(lines, dry_run=args.dry_run, force=args.force,
+        target_path = Path(args.target_dir)
+        scaffold(lines, target_dir=target_path, dry_run=args.dry_run, force=args.force,
                  no_shebang=args.no_shebang, no_templates=args.no_templates)
     except Exception as e:
         sys.stderr.write(f"Error: {e}\n")

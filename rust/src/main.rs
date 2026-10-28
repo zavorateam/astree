@@ -151,7 +151,10 @@ fn main() {
         println!("astree - smart tree to repo generator & dumper\n");
         println!("Usage:\n  astree [FILE]          Scaffold tree into filesystem");
         println!("  astree dump [DIR]      Dump filesystem into annotated tree\n");
-        println!("Options:\n  -c, --clip             Read tree from clipboard");
+        println!(
+            "Options:\n  -t, --target-dir <DIR> Target directory for scaffolding (default: .)"
+        );
+        println!("  -c, --clip             Read tree from clipboard");
         println!("  -d, --dry-run          Preview actions without touching disk");
         println!("  -f, --force            Safely overwrite existing files");
         println!("  --no-shebang           Skip shebang injection");
@@ -165,6 +168,7 @@ fn main() {
     let mut no_templates = false;
     let mut clip = false;
     let mut file_path = None;
+    let mut target_dir = PathBuf::from(".");
 
     let mut i = 1;
     while i < args.len() {
@@ -174,6 +178,12 @@ fn main() {
             "-f" | "--force" => force = true,
             "--no-shebang" => no_shebang = true,
             "--no-templates" => no_templates = true,
+            "-t" | "--target-dir" => {
+                i += 1;
+                if i < args.len() {
+                    target_dir = PathBuf::from(&args[i]);
+                }
+            }
             other => {
                 if !other.starts_with('-') && file_path.is_none() {
                     file_path = Some(other.to_string());
@@ -214,7 +224,7 @@ fn main() {
     let lines = parser::clean_input_lines(&input);
     if let Err(e) = scaffold::scaffold(
         &lines,
-        &PathBuf::from("."),
+        &target_dir,
         dry_run,
         force,
         no_shebang,

@@ -3,14 +3,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${REPO_ROOT}/build"
-BASE_VERSION="0.2.0"
+BASE_VERSION="0.2.2"
 
 MODE="dev"
 DO_INSTALL=false
 PREFIX="${PREFIX:-}"
 BINDIR_ARG="${BINDIR:-}"
 
-# Парсинг аргументов
 while [[ $# -gt 0 ]]; do
     case "$1" in
         prod) MODE="prod"; shift ;;
@@ -26,11 +25,6 @@ while [[ $# -gt 0 ]]; do
             BINDIR_ARG="${1#*=}"; shift ;;
         --help|-h)
             echo "Использование: $0 [dev|prod] [--install|-i] [--prefix <dir>] [--bindir <dir>]"
-            echo ""
-            echo "Опции установки:"
-            echo "  -i, --install         Установить бинарники в систему"
-            echo "  -p, --prefix <dir>    Базовая директория (по умолчанию: ~/.local или /usr/local)"
-            echo "  --bindir <dir>        Точная директория для исполняемых файлов (по умолчанию: <prefix>/bin)"
             exit 0
             ;;
         *)
@@ -40,7 +34,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Определение директории установки
 if [ "$DO_INSTALL" = true ]; then
     if [ -z "$PREFIX" ]; then
         if [ "$(id -u)" -eq 0 ]; then
@@ -52,7 +45,6 @@ if [ "$DO_INSTALL" = true ]; then
     BINDIR="${BINDIR_ARG:-${DESTDIR:-}${PREFIX}/bin}"
 fi
 
-# Версионирование
 if [ "$MODE" = "prod" ]; then
     VERSION="${BASE_VERSION}"
     RUST_FLAGS="--release"
@@ -83,13 +75,27 @@ if [ "$DO_INSTALL" = true ]; then
     echo "-> Установка бинарников в ${BINDIR} (prefix: ${PREFIX})..."
     install -d "${BINDIR}"
     
-    # Установка Python пакета (создает astree-py в <prefix>/bin)
+    # Установка Python пакета
     python3 -m pip install "${REPO_ROOT}" --prefix="${PREFIX}" --no-deps --force-reinstall --quiet
     
+    # Создаем надежный wrapper для astree-py с автопоиском site-packages
+    cat << 'PYWRAPPER' > "${BINDIR}/astree-py"
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+for pydir in "${SCRIPT_DIR}"/lib/python*/site-packages "${SCRIPT_DIR}"/local/lib/python*/site-packages; do
+    if [ -d "$pydir" ]; then
+        export PYTHONPATH="${pydir}:${PYTHONPATH:-}"
+        break
+    fi
+done
+exec python3 -m astree.cli "$@"
+PYWRAPPER
+    chmod 755 "${BINDIR}/astree-py"
+
     # Установка нативного Rust бинарника как главного 'astree'
     install -m 755 "${BUILD_DIR}/astree" "${BINDIR}/astree"
     
     echo "  [OK] ${BINDIR}/astree    (быстрый нативный Rust бинарник)"
-    echo "  [OK] ${BINDIR}/astree-py (Python CLI)"
+    echo "  [OK] ${BINDIR}/astree-py (Python CLI с поддержкой изоляции)"
     echo "Установка успешно завершена в ${BINDIR}!"
 fi

@@ -54,7 +54,6 @@ def extract_comment(path: Path) -> str:
                 if not s or s.startswith("#!"):
                     continue
 
-                # Rust: строго только //, ///, //!, игнорируя атрибуты #[cfg(...)]
                 if ext == ".rs":
                     if s.startswith(("//!", "///")):
                         clean = s[3:].strip()
@@ -64,7 +63,6 @@ def extract_comment(path: Path) -> str:
                         return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', clean)[:80]
                     continue
 
-                # Markdown: если есть цитата-описание '> ...', она приоритетнее H1
                 if ext == ".md":
                     if s.startswith(">"):
                         clean = s.lstrip("> ").strip()
@@ -96,7 +94,7 @@ def load_gitignore(root: Path) -> list[str]:
                 for line in f:
                     s = line.strip()
                     if s and not s.startswith("#"):
-                        patterns.append(s.rstrip("/"))
+                        patterns.append(s.strip("/"))
         except Exception:
             pass
     return patterns
@@ -122,7 +120,7 @@ def dump_tree(root: Path, current: Path, prefix="", level=1, max_level=None,
             continue
         if ignore_pat and re.search(ignore_pat, name):
             continue
-        if any(fnmatch.fnmatch(name, p) or fnmatch.fnmatch(rel, p) for p in gi_patterns):
+        if any(name == p or rel == p or fnmatch.fnmatch(name, p) or fnmatch.fnmatch(rel, p) for p in gi_patterns):
             continue
         if dirs_only and not entry.is_dir():
             continue
@@ -151,8 +149,8 @@ def dump_tree(root: Path, current: Path, prefix="", level=1, max_level=None,
             dump_tree(root, entry, next_prefix, level + 1, max_level,
                       show_sizes, dirs_only, ignore_pat, gi_patterns, out=out)
         else:
-            is_exec = os.access(entry, os.X_OK)
-            star = "*" if is_exec and entry.suffix in {".py", ".sh", ".bash"} else ""
+            is_exec = os.access(entry, os.X_OK) and not entry.is_dir()
+            star = "*" if is_exec else ""
             comment = extract_comment(entry)
             comment_str = f" # {comment}" if comment else ""
             writer(f"{prefix}{connector}{size_tag}{entry.name}{star}{comment_str}\n" if out else f"{prefix}{connector}{size_tag}{entry.name}{star}{comment_str}")
