@@ -33,9 +33,9 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - name: Check Rust formatting
-        run: cargo fmt --manifest-path rust/Cargo.toml -- --check || true
+        run: cargo fmt --manifest-path rust/Cargo.toml -- --check
       - name: Run Clippy
         run: cargo clippy --manifest-path rust/Cargo.toml -- -D warnings
       - name: Run Cargo Tests
@@ -52,9 +52,11 @@ jobs:
           python-version: "3.12"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Run Dogfooding Parity Test
+      - name: Build Rust binary
+        run: cargo build --manifest-path rust/Cargo.toml
+      - name: Run Dogfooding E2E Parity Test
         run: ./tests/test_dogfood.sh
-      - name: Smoke test build and install to custom prefix
+      - name: Smoke test build and install to isolated prefix
         run: |
           ./scripts/build.sh prod --install --prefix /tmp/astree-install
           /tmp/astree-install/bin/astree --version

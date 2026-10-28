@@ -34,15 +34,27 @@ target/
 pub fn validate_safe_path(base_dir: &Path, rel_path: &str, boundary: &Path) -> io::Result<PathBuf> {
     let p = Path::new(rel_path);
     if p.is_absolute() {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("Security violation: absolute path '{}' is prohibited", rel_path)));
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "Security violation: absolute path '{}' is prohibited",
+                rel_path
+            ),
+        ));
     }
-    for comp in p.components() {
-        if matches!(comp, Component::ParentDir) {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("Security violation: parent traversal '..' in '{}' is prohibited", rel_path)));
-        }
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "Security violation: parent traversal '..' in '{}' is prohibited",
+                rel_path
+            ),
+        ));
     }
 
-    let canonical_boundary = boundary.canonicalize().unwrap_or_else(|_| boundary.to_path_buf());
+    let canonical_boundary = boundary
+        .canonicalize()
+        .unwrap_or_else(|_| boundary.to_path_buf());
     let mut curr = base_dir.to_path_buf();
 
     let components: Vec<_> = p.components().collect();
@@ -56,10 +68,14 @@ pub fn validate_safe_path(base_dir: &Path, rel_path: &str, boundary: &Path) -> i
             if curr.is_symlink() {
                 let resolved = match curr.canonicalize() {
                     Ok(r) => r,
-                    Err(_) => match fs::read_link(&curr) {
-                        Ok(target) => if target.is_absolute() { target } else { curr.parent().unwrap().join(target) },
-                        Err(e) => return Err(e),
-                    },
+                    Err(_) => {
+                        let target = fs::read_link(&curr)?;
+                        if target.is_absolute() {
+                            target
+                        } else {
+                            curr.parent().unwrap_or(base_dir).join(target)
+                        }
+                    }
                 };
                 if resolved.strip_prefix(&canonical_boundary).is_err() {
                     return Err(io::Error::new(
@@ -79,17 +95,29 @@ pub fn safe_write_file(path: &Path, content: &str, is_exec: bool, force: bool) -
         fs::create_dir_all(parent)?;
     }
 
-    let exists_as_symlink = path.symlink_metadata().is_ok();
+    let is_symlink = path
+        .symlink_metadata()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
 
     if !force {
+        if is_symlink {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "Symlink '{:?}' already exists. Use --force to overwrite",
+                    path
+                ),
+            ));
+        }
         let mut opts = OpenOptions::new();
         opts.write(true).create_new(true);
         let mut f = match opts.open(path) {
             Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists || exists_as_symlink => {
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
-                    format!("File or symlink '{:?}' already exists. Use --force to overwrite", path),
+                    format!("File '{:?}' already exists. Use --force to overwrite", path),
                 ));
             }
             Err(e) => return Err(e),
@@ -102,11 +130,15 @@ pub fn safe_write_file(path: &Path, content: &str, is_exec: bool, force: bool) -
             f.set_permissions(perms)?;
         }
     } else {
-        if path.exists() && path.is_dir() && !path.is_symlink() {
+        if path.exists() && path.is_dir() && !is_symlink {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 format!("Cannot overwrite directory '{:?}' with a file", path),
             ));
+        }
+
+        if is_symlink {
+            fs::remove_file(path)?;
         }
 
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -114,7 +146,11 @@ pub fn safe_write_file(path: &Path, content: &str, is_exec: bool, force: bool) -
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let temp_path = parent.join(format!(".astree_tmp_{}_{}", std::process::id(), rand_suffix));
+        let temp_path = parent.join(format!(
+            ".astree_tmp_{}_{}",
+            std::process::id(),
+            rand_suffix
+        ));
 
         let mut opts = OpenOptions::new();
         opts.write(true).create_new(true);
@@ -134,11 +170,24 @@ pub fn safe_write_file(path: &Path, content: &str, is_exec: bool, force: bool) -
     Ok(())
 }
 
-pub fn scaffold(lines: &[String], target_dir: &Path, dry_run: bool, force: bool, no_shebang: bool, no_templates: bool) -> io::Result<()> {
+pub fn scaffold(
+    lines: &[String],
+    target_dir: &Path,
+    dry_run: bool,
+    force: bool,
+    no_shebang: bool,
+    no_templates: bool,
+) -> io::Result<()> {
     let mut stack: Vec<String> = Vec::new();
-    let base_dir = target_dir.canonicalize().unwrap_or_else(|_| target_dir.to_path_buf());
+    let base_dir = target_dir
+        .canonicalize()
+        .unwrap_or_else(|_| target_dir.to_path_buf());
     let mut root_boundary = base_dir.clone();
-    let mut root_name = target_dir.file_name().and_then(|s| s.to_str()).unwrap_or("project").to_string();
+    let mut root_name = target_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("project")
+        .to_string();
 
     let mut has_root = false;
     for raw in lines {
@@ -156,7 +205,11 @@ pub fn scaffold(lines: &[String], target_dir: &Path, dry_run: bool, force: bool,
             None => continue,
         };
 
-        let effective_depth = if has_root { node.depth } else { node.depth.saturating_sub(1) };
+        let effective_depth = if has_root {
+            node.depth
+        } else {
+            node.depth.saturating_sub(1)
+        };
         stack.truncate(effective_depth);
 
         let rel_path = if stack.is_empty() {
@@ -180,7 +233,10 @@ pub fn scaffold(lines: &[String], target_dir: &Path, dry_run: bool, force: bool,
             }
             if !dry_run {
                 if current_path.is_file() {
-                    return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("Cannot create directory '{:?}': file exists", current_path)));
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!("Cannot create directory '{:?}': file exists", current_path),
+                    ));
                 }
                 fs::create_dir_all(&current_path)?;
             }
@@ -192,10 +248,22 @@ pub fn scaffold(lines: &[String], target_dir: &Path, dry_run: bool, force: bool,
             if !dry_run {
                 if current_path.is_symlink() || current_path.exists() {
                     if !force {
-                        return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("Cannot overwrite '{:?}' with symlink without --force", current_path)));
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!(
+                                "Cannot overwrite '{:?}' with symlink without --force",
+                                current_path
+                            ),
+                        ));
                     }
                     if current_path.is_dir() && !current_path.is_symlink() {
-                        return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("Cannot overwrite directory '{:?}' with symlink", current_path)));
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!(
+                                "Cannot overwrite directory '{:?}' with symlink",
+                                current_path
+                            ),
+                        ));
                     }
                     fs::remove_file(&current_path)?;
                 }
@@ -209,28 +277,58 @@ pub fn scaffold(lines: &[String], target_dir: &Path, dry_run: bool, force: bool,
             continue;
         }
 
-        let ext = current_path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        let file_name = current_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let ext = current_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let file_name = current_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
 
         let content = if let Some(code) = node.inline_code {
             format!("{}\n", code)
         } else if !no_templates && file_name == "pyproject.toml" {
-            PYPROJECT_TEMPLATE.replace("{name}", &root_name).replace("{comment}", node.comment.as_deref().unwrap_or(""))
+            PYPROJECT_TEMPLATE
+                .replace("{name}", &root_name)
+                .replace("{comment}", node.comment.as_deref().unwrap_or(""))
         } else if !no_templates && file_name == "README.md" && node.comment.is_some() {
             format!("# {}\n\n> {}\n", root_name, node.comment.as_ref().unwrap())
         } else if !no_templates && file_name == ".gitignore" {
             GITIGNORE_TEMPLATE.to_string()
         } else {
+            let parts: Vec<_> = current_path
+                .components()
+                .filter_map(|c| c.as_os_str().to_str())
+                .collect();
+            let in_script_dir = parts
+                .iter()
+                .any(|&p| matches!(p, "scripts" | "bin" | "cli"));
+            let is_entrypoint = matches!(file_name, "main.py" | "app.py");
+
+            let should_shebang = !no_shebang
+                && (node.is_exec
+                    || matches!(ext, "sh" | "bash" | "zsh")
+                    || (ext == "py" && (in_script_dir || is_entrypoint)));
+
             let mut out = String::new();
-            let should_shebang = !no_shebang && (node.is_exec || ext == "sh" || ext == "bash" || (ext == "py" && (rel_path.contains("scripts/") || file_name == "main.py")));
             if should_shebang {
-                if ext == "py" { out.push_str("#!/usr/bin/env python3\n"); }
-                else if ext == "sh" || ext == "bash" { out.push_str("#!/usr/bin/env bash\n"); }
+                match ext {
+                    "py" => out.push_str("#!/usr/bin/env python3\n"),
+                    "sh" | "bash" => out.push_str("#!/usr/bin/env bash\n"),
+                    "zsh" => out.push_str("#!/usr/bin/env zsh\n"),
+                    "js" => out.push_str("#!/usr/bin/env node\n"),
+                    _ => {}
+                }
             }
             if let Some(c) = node.comment {
-                if ext == "py" { out.push_str(&format!("\"\"\"{}\"\"\"\n", c)); }
-                else if ext == "rs" { out.push_str(&format!("//! {}\n", c)); }
-                else { out.push_str(&format!("# {}\n", c)); }
+                if ext == "py" {
+                    out.push_str(&format!("\"\"\"{}\"\"\"\n", c));
+                } else if ext == "rs" {
+                    out.push_str(&format!("//! {}\n", c));
+                } else {
+                    out.push_str(&format!("# {}\n", c));
+                }
             }
             out
         };
@@ -238,7 +336,11 @@ pub fn scaffold(lines: &[String], target_dir: &Path, dry_run: bool, force: bool,
         if !dry_run {
             safe_write_file(&current_path, &content, node.is_exec || ext == "sh", force)?;
         }
-        println!("[FILE] {}{}", rel_path, if node.is_exec { " (+x)" } else { "" });
+        println!(
+            "[FILE] {}{}",
+            rel_path,
+            if node.is_exec { " (+x)" } else { "" }
+        );
     }
     Ok(())
 }

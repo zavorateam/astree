@@ -1,30 +1,37 @@
+use regex::Regex;
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::{self, Command};
-use regex::Regex;
 
+mod dumper;
 mod parser;
 mod scaffold;
-mod dumper;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const CLIPBOARD_COMMANDS: &[&[&str]] = &[
+    &["pbpaste"],
+    &["wl-paste"],
+    &["xclip", "-selection", "clipboard", "-o"],
+    &["xsel", "--clipboard", "--output"],
+];
+
 fn get_clipboard() -> io::Result<String> {
-    for tool in &[
-        vec!["pbpaste"],
-        vec!["wl-paste"],
-        vec!["xclip", "-selection", "clipboard", "-o"],
-        vec!["xsel", "--clipboard", "--output"],
-    ] {
-        if let Ok(output) = Command::new(tool[0]).args(&tool[1..]).output() {
-            if output.status.success() {
-                return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    for tool in CLIPBOARD_COMMANDS {
+        if let Some((cmd, args)) = tool.split_first() {
+            if let Ok(output) = Command::new(cmd).args(args).output() {
+                if output.status.success() {
+                    return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+                }
             }
         }
     }
-    Err(io::Error::new(io::ErrorKind::NotFound, "No clipboard utility available (pbpaste, wl-paste, xclip, xsel)"))
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "No clipboard utility available (pbpaste, wl-paste, xclip, xsel)",
+    ))
 }
 
 fn main() {
@@ -74,11 +81,15 @@ fn main() {
                     }
                 }
                 "--help" => {
-                    println!("Usage: astree dump [DIR] [-L level] [-I pattern] [-h] [-d] [-o file]");
+                    println!(
+                        "Usage: astree dump [DIR] [-L level] [-I pattern] [-h] [-d] [-o file]"
+                    );
                     return;
                 }
                 other => {
-                    if !other.starts_with('-') { dir = PathBuf::from(other); }
+                    if !other.starts_with('-') {
+                        dir = PathBuf::from(other);
+                    }
                 }
             }
             i += 1;
@@ -108,12 +119,23 @@ fn main() {
             None => Box::new(io::stdout()),
         };
 
-        if let Err(e) = writeln!(writer, "{}/", root.file_name().unwrap_or_default().to_string_lossy()) {
+        if let Err(e) = writeln!(
+            writer,
+            "{}/",
+            root.file_name().unwrap_or_default().to_string_lossy()
+        ) {
             eprintln!("Error writing output: {}", e);
             process::exit(1);
         }
 
-        if let Err(e) = dumper::dump_dir(&root, &root, "", 1, max_level, show_sizes, dirs_only, ignore_re.as_ref(), &mut writer) {
+        let options = dumper::DumpOptions {
+            max_level,
+            show_sizes,
+            dirs_only,
+            ignore_re: ignore_re.as_ref(),
+        };
+
+        if let Err(e) = dumper::dump_dir(&root, &root, "", 1, &options, &mut writer) {
             eprintln!("Error during dump: {}", e);
             process::exit(1);
         }
@@ -190,7 +212,14 @@ fn main() {
     };
 
     let lines = parser::clean_input_lines(&input);
-    if let Err(e) = scaffold::scaffold(&lines, &PathBuf::from("."), dry_run, force, no_shebang, no_templates) {
+    if let Err(e) = scaffold::scaffold(
+        &lines,
+        &PathBuf::from("."),
+        dry_run,
+        force,
+        no_shebang,
+        no_templates,
+    ) {
         eprintln!("Error: {}", e);
         process::exit(1);
     }

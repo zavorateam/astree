@@ -11,9 +11,9 @@ pub struct ParsedNode {
 
 pub fn strip_size_prefix(s: &str) -> &str {
     let trimmed = s.trim_start();
-    if trimmed.starts_with('[') {
-        if let Some(idx) = trimmed.find(']') {
-            return trimmed[idx + 1..].trim_start();
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        if let Some(idx) = rest.find(']') {
+            return rest[idx + 1..].trim_start();
         }
     }
     s
@@ -31,17 +31,18 @@ pub fn clean_input_lines(raw: &str) -> Vec<String> {
         }
     }
 
-    let mut lines = Vec::new();
-    for line in text.lines() {
-        let stripped = line.trim();
-        if stripped.is_empty() {
-            continue;
-        }
-        if line.contains('│') || line.contains('├') || line.contains('└') || line.contains('─') || stripped.ends_with('/') {
-            lines.push(line.to_string());
-        }
-    }
-    lines
+    text.lines()
+        .filter(|line| {
+            let stripped = line.trim();
+            !stripped.is_empty()
+                && (line.contains('│')
+                    || line.contains('├')
+                    || line.contains('└')
+                    || line.contains('─')
+                    || stripped.ends_with('/'))
+        })
+        .map(|s| s.to_string())
+        .collect()
 }
 
 pub fn parse_line(raw_line: &str) -> Option<ParsedNode> {
@@ -50,7 +51,9 @@ pub fn parse_line(raw_line: &str) -> Option<ParsedNode> {
         return None;
     }
 
-    let tree_idx = line.find(|c| c != '│' && c != '├' && c != '└' && c != '─' && c != ' ').unwrap_or(line.len());
+    let tree_idx = line
+        .find(|c| c != '│' && c != '├' && c != '└' && c != '─' && c != ' ')
+        .unwrap_or(line.len());
     let prefix = &line[..tree_idx];
     let mut body = &line[tree_idx..];
 
@@ -78,19 +81,19 @@ pub fn parse_line(raw_line: &str) -> Option<ParsedNode> {
         symlink_target = Some(dst.trim().to_string());
     }
 
-    let is_exec = body.ends_with('*');
-    if is_exec {
-        body = &body[..body.len() - 1];
-    }
+    let (body_no_exec, is_exec) = match body.strip_suffix('*') {
+        Some(stripped) => (stripped, true),
+        None => (body, false),
+    };
 
-    let is_dir = body.ends_with('/');
-    if is_dir {
-        body = body.trim_end_matches('/');
-    }
+    let (final_body, is_dir) = match body_no_exec.strip_suffix('/') {
+        Some(stripped) => (stripped, true),
+        None => (body_no_exec, false),
+    };
 
     Some(ParsedNode {
         depth,
-        name: body.to_string(),
+        name: final_body.to_string(),
         is_dir,
         is_exec,
         symlink_target,

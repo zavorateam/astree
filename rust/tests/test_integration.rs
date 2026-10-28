@@ -1,5 +1,5 @@
-use std::process::Command;
 use std::io::Write;
+use std::process::Command;
 
 #[test]
 fn test_cli_version() {
@@ -22,7 +22,12 @@ fn test_security_parent_traversal() {
         .spawn()
         .expect("Failed to spawn process");
 
-    child.stdin.as_mut().unwrap().write_all(malicious_tree.as_bytes()).unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(malicious_tree.as_bytes())
+        .unwrap();
     let output = child.wait_with_output().unwrap();
 
     assert!(!output.status.success());
@@ -43,14 +48,26 @@ fn test_security_intermediate_symlink_escape() {
 
     let tree = "proj/\n└── sub/payload.sh\n";
     let mut child = Command::new("cargo")
-        .args(["run", "--quiet", "--manifest-path", concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"), "--", "-"])
+        .args([
+            "run",
+            "--quiet",
+            "--manifest-path",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+            "--",
+            "-",
+        ])
         .current_dir(temp.path())
         .stdin(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
 
-    child.stdin.as_mut().unwrap().write_all(tree.as_bytes()).unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(tree.as_bytes())
+        .unwrap();
     let output = child.wait_with_output().unwrap();
 
     assert!(!output.status.success());
@@ -65,13 +82,25 @@ fn test_markdown_codeblock_scaffold() {
     let md_tree = "Here is the structure:\n```bash\nmd_app/\n├── file.txt\n```\nDone!";
 
     let mut child = Command::new("cargo")
-        .args(["run", "--quiet", "--manifest-path", concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"), "--", "-"])
+        .args([
+            "run",
+            "--quiet",
+            "--manifest-path",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+            "--",
+            "-",
+        ])
         .current_dir(temp.path())
         .stdin(std::process::Stdio::piped())
         .spawn()
         .unwrap();
 
-    child.stdin.as_mut().unwrap().write_all(md_tree.as_bytes()).unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(md_tree.as_bytes())
+        .unwrap();
     let status = child.wait().unwrap();
     assert!(status.success());
     assert!(temp.path().join("md_app/file.txt").exists());
