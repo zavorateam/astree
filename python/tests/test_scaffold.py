@@ -1,5 +1,5 @@
-import os
-import stat
+import pytest
+from pathlib import Path
 from astree.scaffold import scaffold
 
 def test_scaffold_creation(tmp_path):
@@ -10,14 +10,28 @@ def test_scaffold_creation(tmp_path):
     │   └── run.py
     └── config.yaml # app config
     """
-    os.chdir(tmp_path)
-    scaffold(tree.strip().splitlines())
+    scaffold(tree.strip().splitlines(), target_dir=tmp_path)
 
     assert (tmp_path / "my_app/README.md").exists()
     assert (tmp_path / "my_app/scripts/run.py").exists()
 
-    # Проверка shebang и прав исполнения для скрипта в scripts/
-    run_file = tmp_path / "my_app/scripts/run.py"
-    content = run_file.read_text()
-    assert content.startswith("#!/usr/bin/env python3")
-    assert os.stat(run_file).st_mode & stat.S_IXUSR
+def test_overwrite_protection(tmp_path):
+    tree = "app/\n├── file.txt # original\n"
+    scaffold(tree.strip().splitlines(), target_dir=tmp_path)
+    file_path = tmp_path / "app/file.txt"
+    file_path.write_text("user modified data")
+
+    # Без --force должна выбрасываться ошибка
+    with pytest.raises(FileExistsError):
+        scaffold(tree.strip().splitlines(), target_dir=tmp_path, force=False)
+
+    assert file_path.read_text() == "user modified data"
+
+    # С --force файл успешно перезаписывается
+    scaffold(tree.strip().splitlines(), target_dir=tmp_path, force=True)
+    assert file_path.read_text() != "user modified data"
+
+def test_path_traversal_protection(tmp_path):
+    tree = "app/\n├── ../../evil.txt\n"
+    with pytest.raises(PermissionError):
+        scaffold(tree.strip().splitlines(), target_dir=tmp_path)

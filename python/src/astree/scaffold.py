@@ -1,5 +1,6 @@
 import os
 import stat
+import tempfile
 from pathlib import Path
 from astree.parser import parse_line
 
@@ -50,10 +51,27 @@ LANGUAGE_RULES = {
 
 SCRIPT_DIRS = {"scripts", "bin", "cli"}
 
-def generate_content(path: str, comment: str | None, inline_code: str | None,
+def validate_safe_path(base_dir: Path, rel_path: str) -> Path:
+    """Защита от Path Traversal: запрет '..', абсолютных путей и побега через симлинки."""
+    p = Path(rel_path)
+    if p.is_absolute():
+        raise PermissionError(f"Security violation: absolute path '{rel_path}' is prohibited")
+    if ".." in p.parts:
+        raise PermissionError(f"Security violation: parent directory traversal '..' in '{rel_path}' is prohibited")
+
+    resolved_base = base_dir.resolve()
+    target = (base_dir / p).resolve()
+    try:
+        target.relative_to(resolved_base)
+    except ValueError:
+        raise PermissionError(f"Security violation: path '{rel_path}' escapes target directory")
+
+    return base_dir / p
+
+def generate_content(path: Path, comment: str | None, inline_code: str | None,
                      project_name: str, is_exec: bool, no_shebang: bool, no_templates: bool) -> tuple[str, bool]:
-    ext = Path(path).suffix.lower()
-    fname = os.path.basename(path)
+    ext = path.suffix.lower()
+    fname = path.name
     rule = LANGUAGE_RULES.get(ext, {"shebang": None, "style": "hash"})
 
     if inline_code is not None:
@@ -67,7 +85,7 @@ def generate_content(path: str, comment: str | None, inline_code: str | None,
         if fname == ".gitignore":
             return TEMPLATES["gitignore"], False
 
-    parts = Path(path).parts
+    parts = path.parts
     should_shebang = False
     if not no_shebang:
         if is_exec:
@@ -99,9 +117,36 @@ def generate_content(path: str, comment: str | None, inline_code: str | None,
     content = ("\n".join(lines) + "\n") if lines else ""
     return content, is_exec
 
-def scaffold(lines: list[str], dry_run=False, force=False, no_shebang=False, no_templates=False):
+def safe_write_file(path: Path, content: str, is_exec: bool, force: bool):
+    """Атомарная запись файла с защитой от перезаписи и перезаписи через симлинки."""
+    if path.is_symlink():
+        if not force:
+            raise FileExistsError(f"Cannot overwrite existing symlink '{path}' without --force")
+        path.unlink()
+    elif path.exists():
+        if path.is_dir():
+            raise IsADirectoryError(f"Cannot overwrite existing directory '{path}' with a file")
+        if not force:
+            raise FileExistsError(f"File '{path}' already exists. Use --force to overwrite")
+
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+
+    # Атомарная запись через временный файл в том же каталоге
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=parent, delete=False) as tf:
+        tf.write(content)
+        temp_name = tf.name
+
+    if is_exec:
+        current_mode = os.stat(temp_name).st_mode
+        os.chmod(temp_name, current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    os.replace(temp_name, path)
+
+def scaffold(lines: list[str], target_dir: Path = Path("."), dry_run=False, force=False, no_shebang=False, no_templates=False):
     stack = []
-    root_name = "project"
+    root_name = target_dir.name or "project"
+    base_dir = target_dir.resolve()
 
     for raw in lines:
         node = parse_line(raw)
@@ -109,26 +154,31 @@ def scaffold(lines: list[str], dry_run=False, force=False, no_shebang=False, no_
             continue
 
         stack = stack[:node.depth]
-        current_path = os.path.join(*stack, node.name) if stack else node.name
+        rel_path = os.path.join(*stack, node.name) if stack else node.name
+        current_path = validate_safe_path(base_dir, rel_path)
 
         if node.is_dir:
             stack.append(node.name)
             if node.depth == 0:
                 root_name = node.name
             if not dry_run:
-                os.makedirs(current_path, exist_ok=True)
-            print(f"[DIR]  {current_path}")
+                if current_path.is_file():
+                    raise FileExistsError(f"Cannot create directory '{current_path}': file exists")
+                current_path.mkdir(parents=True, exist_ok=True)
+            print(f"[DIR]  {rel_path}/")
             continue
 
         if node.symlink_target:
             if not dry_run:
-                parent = os.path.dirname(current_path)
-                if parent:
-                    os.makedirs(parent, exist_ok=True)
-                if (os.path.exists(current_path) or os.path.islink(current_path)) and force:
-                    os.unlink(current_path)
+                if current_path.is_symlink() or current_path.exists():
+                    if not force:
+                        raise FileExistsError(f"Cannot overwrite '{current_path}' with symlink without --force")
+                    if current_path.is_dir() and not current_path.is_symlink():
+                        raise IsADirectoryError(f"Cannot overwrite directory '{current_path}' with symlink")
+                    current_path.unlink()
+                current_path.parent.mkdir(parents=True, exist_ok=True)
                 os.symlink(node.symlink_target, current_path)
-            print(f"[LINK] {current_path} -> {node.symlink_target}")
+            print(f"[LINK] {rel_path} -> {node.symlink_target}")
             continue
 
         content, make_exec = generate_content(
@@ -137,12 +187,6 @@ def scaffold(lines: list[str], dry_run=False, force=False, no_shebang=False, no_
         )
 
         if not dry_run:
-            parent = os.path.dirname(current_path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with open(current_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            if make_exec:
-                os.chmod(current_path, os.stat(current_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            safe_write_file(current_path, content, make_exec, force)
 
-        print(f"[FILE] {current_path}{' (+x)' if make_exec else ''}")
+        print(f"[FILE] {rel_path}{' (+x)' if make_exec else ''}")

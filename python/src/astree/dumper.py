@@ -28,17 +28,22 @@ def is_binary(path: Path) -> bool:
     return False
 
 def human_size(bytes_len: int) -> str:
+    """Форматирует размер строго без разрыва числа и единицы ([  1K], [1.2M])."""
     for unit in ['B', 'K', 'M', 'G', 'T']:
         if bytes_len < 1024:
             if unit == 'B':
                 return f"[{bytes_len:>4}{unit}]"
-            return f"[{bytes_len:>4.1f}{unit}]".replace('.0', ' ')
+            val = bytes_len / 1024.0
+            if val < 10.0:
+                return f"[{val:>4.1f}{unit}]"
+            return f"[{int(val):>4}{unit}]"
         bytes_len /= 1024
     return f"[{bytes_len:>4.1f}P]"
 
 def extract_comment(path: Path) -> str:
     if is_binary(path):
         return ""
+    ext = path.suffix.lower()
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for _ in range(15):
@@ -48,10 +53,21 @@ def extract_comment(path: Path) -> str:
                 s = line.strip()
                 if not s or s.startswith("#!"):
                     continue
+
+                # Особый случай Rust: не воспринимаем атрибуты #[cfg(...)] как комментарии!
+                if ext == ".rs":
+                    if s.startswith(("//!", "///")):
+                        clean = s[3:].strip()
+                        return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', clean)[:80]
+                    if s.startswith("//"):
+                        clean = s[2:].strip()
+                        return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', clean)[:80]
+                    continue
+
                 if s.startswith(('"""', "'''")):
                     raw = s.strip("\"'").strip()
                     return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', raw)[:80]
-                if path.suffix == ".md" and s.startswith("#"):
+                if ext == ".md" and s.startswith("#"):
                     return s.lstrip("# ").strip()[:80]
                 if s.startswith(("//", "#", "<!--", "--")):
                     raw = re.sub(r'^[#/\-<! ]+', '', s).rstrip('-> ').strip()
@@ -77,7 +93,7 @@ def load_gitignore(root: Path) -> list[str]:
 
 def dump_tree(root: Path, current: Path, prefix="", level=1, max_level=None,
               show_sizes=False, dirs_only=False, ignore_pat=None, gi_patterns=None):
-    if max_level and level > max_level:
+    if max_level is not None and level > max_level:
         return
 
     if gi_patterns is None:

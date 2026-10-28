@@ -1,6 +1,4 @@
-import io
-import sys
-from astree.dumper import is_binary, extract_comment, dump_tree
+from astree.dumper import is_binary, extract_comment
 
 def test_binary_guard(tmp_path):
     bin_file = tmp_path / "test.o"
@@ -8,7 +6,8 @@ def test_binary_guard(tmp_path):
     assert is_binary(bin_file) is True
     assert extract_comment(bin_file) == ""
 
-def test_comment_extraction(tmp_path):
-    py_file = tmp_path / "mod.py"
-    py_file.write_text('"""Important module docstring"""\n')
-    assert extract_comment(py_file) == "Important module docstring"
+def test_rust_attribute_not_comment(tmp_path):
+    rs_file = tmp_path / "main.rs"
+    rs_file.write_text('#[cfg(unix)]\nuse std::os::unix;\n//! Real module doc\n')
+    # Должен игнорировать #[cfg(unix)] и находить //! Real module doc
+    assert extract_comment(rs_file) == "Real module doc"

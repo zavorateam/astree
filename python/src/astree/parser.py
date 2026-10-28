@@ -13,11 +13,11 @@ class ParsedNode:
     inline_code: Optional[str] = None
 
 def strip_metadata_prefixes(line: str) -> str:
-    """Удаляет метаданные размеров из вывода tree -h (например, [ 21K] или [ 716])."""
-    return re.sub(r'(\s*[│├└─\s]+)\[\s*[\d\.]+[BKMGT]?\s*\]\s+', r'\1', line)
+    """Удаляет метаданные размеров из вывода tree -h (например, [ 21K], [  1K], [ 1.2M])."""
+    return re.sub(r'(\s*[│├└─\s]+)\[\s*[\d\.]+\s*[BKMGTPEZY]?\s*\]\s+', r'\1', line)
 
 def clean_input_lines(raw_text: str) -> list[str]:
-    """Извлекает блок дерева из Markdown (```...```) и очищает вывод."""
+    """Извлекает дерево каталогов из Markdown-блоков или сырого текста."""
     m = re.search(r'```(?:[a-zA-Z0-9_\-]+)?\n(.*?)\n```', raw_text, re.DOTALL)
     if m:
         raw_text = m.group(1)
@@ -37,7 +37,6 @@ def parse_line(raw_line: str) -> Optional[ParsedNode]:
     if not line:
         return None
 
-    # Отделяем префикс дерева (каждый уровень — 4 символа)
     m_prefix = re.match(r'^(?:[│\s]*[├└]──\s*|\s*)', line)
     prefix = m_prefix.group(0) if m_prefix else ''
     body = line[len(prefix):].strip()
@@ -46,7 +45,6 @@ def parse_line(raw_line: str) -> Optional[ParsedNode]:
 
     depth = len(prefix) // 4 if prefix else 0
 
-    # Выделяем инлайн-комментарий (# или //)
     comment = None
     inline_code = None
     m_comment = re.search(r'\s+(?:#|//)\s*(.*)$', body)
@@ -58,14 +56,12 @@ def parse_line(raw_line: str) -> Optional[ParsedNode]:
         else:
             comment = c_text
 
-    # Симлинки: link -> target
     symlink_target = None
     if "->" in body:
         parts = body.split("->", 1)
         body = parts[0].strip()
         symlink_target = parts[1].strip()
 
-    # Флаг исполняемого файла (*)
     is_exec = False
     if body.endswith('*'):
         is_exec = True

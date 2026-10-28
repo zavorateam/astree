@@ -2,5 +2,9 @@
 name = "astree"
 version = "0.2.0"
 edition = "2021"
+authors = ["vaultek"]
+description = "Reverse-tree CLI generator with smart shebangs, templates and safe dumper."
+license = "MIT"
 
 [dependencies]
+regex = "1.10"
