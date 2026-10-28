@@ -19,19 +19,39 @@ def test_overwrite_protection(tmp_path):
     tree = "app/\n├── file.txt # original\n"
     scaffold(tree.strip().splitlines(), target_dir=tmp_path)
     file_path = tmp_path / "app/file.txt"
-    file_path.write_text("user modified data")
+    file_path.write_text("user data")
 
-    # Без --force должна выбрасываться ошибка
     with pytest.raises(FileExistsError):
         scaffold(tree.strip().splitlines(), target_dir=tmp_path, force=False)
 
-    assert file_path.read_text() == "user modified data"
+    assert file_path.read_text() == "user data"
 
-    # С --force файл успешно перезаписывается
     scaffold(tree.strip().splitlines(), target_dir=tmp_path, force=True)
-    assert file_path.read_text() != "user modified data"
+    assert file_path.read_text() != "user data"
 
 def test_path_traversal_protection(tmp_path):
     tree = "app/\n├── ../../evil.txt\n"
     with pytest.raises(PermissionError):
         scaffold(tree.strip().splitlines(), target_dir=tmp_path)
+
+def test_intermediate_symlink_escape_protection(tmp_path):
+    # Создаем проект с симлинком на внешнюю директорию
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    symlink_path = project / "sub"
+    import os
+    os.symlink(outside, symlink_path)
+
+    # Попытка записать файл внутрь симлинка, ведущего наружу
+    tree = "proj/\n└── sub/payload.sh\n"
+    with pytest.raises(PermissionError):
+        scaffold(tree.strip().splitlines(), target_dir=tmp_path)
+    assert not (outside / "payload.sh").exists()
+
+def test_dry_run_leaves_filesystem_untouched(tmp_path):
+    tree = "dry_proj/\n├── file1.txt\n└── sub/\n    └── file2.txt\n"
+    scaffold(tree.strip().splitlines(), target_dir=tmp_path, dry_run=True)
+    assert not (tmp_path / "dry_proj").exists()

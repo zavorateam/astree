@@ -51,20 +51,26 @@ LANGUAGE_RULES = {
 
 SCRIPT_DIRS = {"scripts", "bin", "cli"}
 
-def validate_safe_path(base_dir: Path, rel_path: str) -> Path:
-    """Защита от Path Traversal: запрет '..', абсолютных путей и побега через симлинки."""
+def validate_safe_path(base_dir: Path, rel_path: str, boundary: Path | None = None) -> Path:
+    """Защита от Path Traversal: блокирует абсолютные пути, '..' и запись через внешние симлинки."""
     p = Path(rel_path)
     if p.is_absolute():
         raise PermissionError(f"Security violation: absolute path '{rel_path}' is prohibited")
     if ".." in p.parts:
-        raise PermissionError(f"Security violation: parent directory traversal '..' in '{rel_path}' is prohibited")
+        raise PermissionError(f"Security violation: parent traversal '..' in '{rel_path}' is prohibited")
 
-    resolved_base = base_dir.resolve()
-    target = (base_dir / p).resolve()
-    try:
-        target.relative_to(resolved_base)
-    except ValueError:
-        raise PermissionError(f"Security violation: path '{rel_path}' escapes target directory")
+    effective_boundary = (boundary or base_dir).resolve()
+    
+    # Поэтапная проверка всех промежуточных директорий на побег через симлинки за границу проекта
+    curr = base_dir
+    for part in p.parts[:-1]:
+        curr = curr / part
+        if curr.is_symlink():
+            resolved_curr = curr.resolve()
+            if not resolved_curr.is_relative_to(effective_boundary):
+                raise PermissionError(
+                    f"Security violation: intermediate symlink '{curr}' escapes boundary '{effective_boundary}'"
+                )
 
     return base_dir / p
 
@@ -118,49 +124,60 @@ def generate_content(path: Path, comment: str | None, inline_code: str | None,
     return content, is_exec
 
 def safe_write_file(path: Path, content: str, is_exec: bool, force: bool):
-    """Атомарная запись файла с защитой от перезаписи и перезаписи через симлинки."""
-    if path.is_symlink():
-        if not force:
-            raise FileExistsError(f"Cannot overwrite existing symlink '{path}' without --force")
-        path.unlink()
-    elif path.exists():
-        if path.is_dir():
-            raise IsADirectoryError(f"Cannot overwrite existing directory '{path}' with a file")
-        if not force:
-            raise FileExistsError(f"File '{path}' already exists. Use --force to overwrite")
-
+    """Атомарная запись без TOCTOU-гонок и с разрывом существующих симлинков."""
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
 
-    # Атомарная запись через временный файл в том же каталоге
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=parent, delete=False) as tf:
-        tf.write(content)
-        temp_name = tf.name
+    if not force:
+        try:
+            with open(path, "x", encoding="utf-8") as f:
+                f.write(content)
+        except FileExistsError:
+            raise FileExistsError(f"File or symlink '{path}' already exists. Use --force to overwrite")
+    else:
+        if path.exists() and path.is_dir() and not path.is_symlink():
+            raise IsADirectoryError(f"Cannot overwrite directory '{path}' with a file")
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=parent, delete=False) as tf:
+            tf.write(content)
+            temp_name = tf.name
+
+        os.replace(temp_name, path)
 
     if is_exec:
-        current_mode = os.stat(temp_name).st_mode
-        os.chmod(temp_name, current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-    os.replace(temp_name, path)
+        current_mode = os.stat(path).st_mode
+        os.chmod(path, current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 def scaffold(lines: list[str], target_dir: Path = Path("."), dry_run=False, force=False, no_shebang=False, no_templates=False):
     stack = []
-    root_name = target_dir.name or "project"
     base_dir = target_dir.resolve()
+    root_name = target_dir.name or "project"
+    project_boundary = base_dir
+
+    # Определяем, имеет ли дерево корневую папку нулевого уровня
+    has_root = False
+    for raw in lines:
+        node = parse_line(raw)
+        if node:
+            if node.depth == 0 and node.is_dir:
+                has_root = True
+            break
 
     for raw in lines:
         node = parse_line(raw)
         if not node:
             continue
 
-        stack = stack[:node.depth]
+        effective_depth = node.depth if has_root else max(0, node.depth - 1)
+        stack = stack[:effective_depth]
         rel_path = os.path.join(*stack, node.name) if stack else node.name
-        current_path = validate_safe_path(base_dir, rel_path)
+        current_path = validate_safe_path(base_dir, rel_path, boundary=project_boundary)
 
         if node.is_dir:
             stack.append(node.name)
-            if node.depth == 0:
+            if node.depth == 0 and has_root:
                 root_name = node.name
+                project_boundary = (base_dir / node.name).resolve()
             if not dry_run:
                 if current_path.is_file():
                     raise FileExistsError(f"Cannot create directory '{current_path}': file exists")

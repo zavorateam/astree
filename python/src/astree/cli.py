@@ -1,4 +1,5 @@
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -9,10 +10,14 @@ from astree.scaffold import scaffold
 from astree.dumper import dump_tree
 
 def get_clipboard() -> str:
-    for cmd in [["pbpaste"], ["wl-paste"], ["xclip", "-selection", "clipboard", "-o"]]:
+    for cmd in [["pbpaste"], ["wl-paste"], ["xclip", "-selection", "clipboard", "-o"], ["xsel", "--clipboard", "--output"]]:
         if shutil.which(cmd[0]):
-            return subprocess.check_output(cmd, text=True)
-    sys.exit("Error: no clipboard utility available (pbpaste, wl-paste, xclip).")
+            try:
+                return subprocess.check_output(cmd, text=True)
+            except Exception:
+                pass
+    sys.stderr.write("Error: no clipboard utility available (pbpaste, wl-paste, xclip, xsel)\n")
+    sys.exit(1)
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "dump":
@@ -34,18 +39,42 @@ def main():
             sys.stderr.write("Error: -L/--level must be non-negative\n")
             sys.exit(1)
 
+        if args.ignore:
+            try:
+                re.compile(args.ignore)
+            except re.error as e:
+                sys.stderr.write(f"Error: Invalid regex for -I/--ignore: {e}\n")
+                sys.exit(1)
+
         root = Path(args.dir).resolve()
         if not root.is_dir():
             sys.stderr.write(f"Error: '{args.dir}' is not a directory\n")
             sys.exit(1)
 
+        out_stream = None
         if args.output:
-            sys.stdout = open(args.output, "w", encoding="utf-8")
+            try:
+                out_stream = open(args.output, "w", encoding="utf-8")
+            except Exception as e:
+                sys.stderr.write(f"Error: Cannot open output file '{args.output}': {e}\n")
+                sys.exit(1)
 
-        print(f"{root.name}/")
-        dump_tree(root, root, level=1, max_level=args.level,
-                  show_sizes=args.human_readable, dirs_only=args.dirs_only,
-                  ignore_pat=args.ignore)
+        header = f"{root.name}/\n" if out_stream else f"{root.name}/"
+        if out_stream:
+            out_stream.write(header)
+        else:
+            print(header)
+
+        try:
+            dump_tree(root, root, level=1, max_level=args.level,
+                      show_sizes=args.human_readable, dirs_only=args.dirs_only,
+                      ignore_pat=args.ignore, out=out_stream)
+        except Exception as e:
+            sys.stderr.write(f"Error during dump: {e}\n")
+            sys.exit(1)
+        finally:
+            if out_stream:
+                out_stream.close()
         return
 
     parser = argparse.ArgumentParser(
@@ -55,7 +84,7 @@ def main():
     parser.add_argument("file", nargs="?", default=None, help="Input tree file or '-' for stdin")
     parser.add_argument("-c", "--clip", action="store_true", help="Read tree from clipboard")
     parser.add_argument("-d", "--dry-run", action="store_true", help="Preview actions without writing to disk")
-    parser.add_argument("-f", "--force", action="store_true", help="Overwrite existing files safely")
+    parser.add_argument("-f", "--force", action="store_true", help="Safely overwrite existing files")
     parser.add_argument("--no-shebang", action="store_true", help="Do not inject shebang lines")
     parser.add_argument("--no-templates", action="store_true", help="Do not generate template boilerplates")
     parser.add_argument("-V", "--version", action="version", version=f"astree v{__version__}")

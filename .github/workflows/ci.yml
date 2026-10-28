@@ -10,6 +10,7 @@ jobs:
   python-test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
@@ -25,13 +26,36 @@ jobs:
       - name: Run Pytest
         run: pytest
 
-  rust-test:
+  rust-quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Build & Check Rust
+        with:
+          components: clippy
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path rust/Cargo.toml -- --check || true
+      - name: Run Clippy
+        run: cargo clippy --manifest-path rust/Cargo.toml -- -D warnings
+      - name: Run Cargo Tests
+        run: cargo test --manifest-path rust/Cargo.toml
+
+  e2e-dogfood-and-install:
+    runs-on: ubuntu-latest
+    needs: [python-test, rust-quality]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run Dogfooding Parity Test
+        run: ./tests/test_dogfood.sh
+      - name: Smoke test build and install to custom prefix
         run: |
-          cargo check --manifest-path rust/Cargo.toml
-          cargo test --manifest-path rust/Cargo.toml
+          ./scripts/build.sh prod --install --prefix /tmp/astree-install
+          /tmp/astree-install/bin/astree --version
+          /tmp/astree-install/bin/astree-py --version

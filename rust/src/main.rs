@@ -1,8 +1,8 @@
 use std::env;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::PathBuf;
-use std::process;
+use std::process::{self, Command};
 use regex::Regex;
 
 mod parser;
@@ -10,6 +10,22 @@ mod scaffold;
 mod dumper;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn get_clipboard() -> io::Result<String> {
+    for tool in &[
+        vec!["pbpaste"],
+        vec!["wl-paste"],
+        vec!["xclip", "-selection", "clipboard", "-o"],
+        vec!["xsel", "--clipboard", "--output"],
+    ] {
+        if let Ok(output) = Command::new(tool[0]).args(&tool[1..]).output() {
+            if output.status.success() {
+                return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+            }
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::NotFound, "No clipboard utility available (pbpaste, wl-paste, xclip, xsel)"))
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -81,7 +97,7 @@ fn main() {
             process::exit(1);
         }
 
-        let mut writer: Box<dyn Write> = match output_file {
+        let mut writer: Box<dyn io::Write> = match output_file {
             Some(path) => match File::create(&path) {
                 Ok(f) => Box::new(f),
                 Err(e) => {
@@ -92,8 +108,15 @@ fn main() {
             None => Box::new(io::stdout()),
         };
 
-        let _ = writeln!(writer, "{}/", root.file_name().unwrap_or_default().to_string_lossy());
-        dumper::dump_dir(&root, &root, "", 1, max_level, show_sizes, dirs_only, ignore_re.as_ref(), &mut writer);
+        if let Err(e) = writeln!(writer, "{}/", root.file_name().unwrap_or_default().to_string_lossy()) {
+            eprintln!("Error writing output: {}", e);
+            process::exit(1);
+        }
+
+        if let Err(e) = dumper::dump_dir(&root, &root, "", 1, max_level, show_sizes, dirs_only, ignore_re.as_ref(), &mut writer) {
+            eprintln!("Error during dump: {}", e);
+            process::exit(1);
+        }
         return;
     }
 
@@ -106,7 +129,8 @@ fn main() {
         println!("astree - smart tree to repo generator & dumper\n");
         println!("Usage:\n  astree [FILE]          Scaffold tree into filesystem");
         println!("  astree dump [DIR]      Dump filesystem into annotated tree\n");
-        println!("Options:\n  -d, --dry-run          Preview actions without touching disk");
+        println!("Options:\n  -c, --clip             Read tree from clipboard");
+        println!("  -d, --dry-run          Preview actions without touching disk");
         println!("  -f, --force            Safely overwrite existing files");
         println!("  --no-shebang           Skip shebang injection");
         println!("  --no-templates         Skip template expansion");
@@ -117,11 +141,13 @@ fn main() {
     let mut force = false;
     let mut no_shebang = false;
     let mut no_templates = false;
+    let mut clip = false;
     let mut file_path = None;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "-c" | "--clip" => clip = true,
             "-d" | "--dry-run" => dry_run = true,
             "-f" | "--force" => force = true,
             "--no-shebang" => no_shebang = true,
@@ -135,24 +161,36 @@ fn main() {
         i += 1;
     }
 
-    let mut input = String::new();
-    if let Some(path) = file_path {
+    let input = if clip {
+        match get_clipboard() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        }
+    } else if let Some(path) = file_path {
         if path != "-" {
-            input = match fs::read_to_string(&path) {
+            match fs::read_to_string(&path) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Error: Cannot read file '{}': {}", path, e);
                     process::exit(1);
                 }
-            };
+            }
         } else {
-            io::stdin().read_to_string(&mut input).unwrap();
+            let mut buf = String::new();
+            io::stdin().read_to_string(&mut buf).unwrap();
+            buf
         }
     } else {
-        io::stdin().read_to_string(&mut input).unwrap();
-    }
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf).unwrap();
+        buf
+    };
 
-    if let Err(e) = scaffold::scaffold(&input, &PathBuf::from("."), dry_run, force, no_shebang, no_templates) {
+    let lines = parser::clean_input_lines(&input);
+    if let Err(e) = scaffold::scaffold(&lines, &PathBuf::from("."), dry_run, force, no_shebang, no_templates) {
         eprintln!("Error: {}", e);
         process::exit(1);
     }

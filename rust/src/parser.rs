@@ -19,6 +19,31 @@ pub fn strip_size_prefix(s: &str) -> &str {
     s
 }
 
+pub fn clean_input_lines(raw: &str) -> Vec<String> {
+    let mut text = raw;
+    if let Some(start) = raw.find("```") {
+        let after_start = &raw[start + 3..];
+        if let Some(newline) = after_start.find('\n') {
+            let body = &after_start[newline + 1..];
+            if let Some(end) = body.find("```") {
+                text = &body[..end];
+            }
+        }
+    }
+
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let stripped = line.trim();
+        if stripped.is_empty() {
+            continue;
+        }
+        if line.contains('│') || line.contains('├') || line.contains('└') || line.contains('─') || stripped.ends_with('/') {
+            lines.push(line.to_string());
+        }
+    }
+    lines
+}
+
 pub fn parse_line(raw_line: &str) -> Option<ParsedNode> {
     let line = raw_line.trim_end();
     if line.is_empty() {

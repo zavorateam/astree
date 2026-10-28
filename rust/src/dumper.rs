@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use regex::Regex;
 
@@ -50,6 +50,8 @@ pub fn extract_comment(path: &Path) -> Option<String> {
         return None;
     }
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let mut md_header: Option<String> = None;
+
     if let Ok(f) = File::open(path) {
         let reader = BufReader::new(f);
         for line in reader.lines().take(15).flatten() {
@@ -71,12 +73,22 @@ pub fn extract_comment(path: &Path) -> Option<String> {
                 continue;
             }
 
+            // Markdown: приоритет цитаты-описания '> ...'
+            if ext == "md" {
+                if let Some(clean) = s.strip_prefix('>') {
+                    let c = clean.trim();
+                    if !c.is_empty() { return Some(c.chars().take(80).collect()); }
+                }
+                if s.starts_with('#') && md_header.is_none() {
+                    let clean = s.trim_start_matches('#').trim();
+                    if !clean.is_empty() { md_header = Some(clean.chars().take(80).collect()); }
+                }
+                continue;
+            }
+
             if s.starts_with("\"\"\"") || s.starts_with("'''") {
                 let clean = s.trim_matches(|c| c == '"' || c == '\'').trim();
                 if !clean.is_empty() { return Some(clean.chars().take(80).collect()); }
-            }
-            if ext == "md" && s.starts_with('#') {
-                return Some(s.trim_start_matches('#').trim().chars().take(80).collect());
             }
             for prefix in &["//", "#", "<!--", "--"] {
                 if s.starts_with(prefix) {
@@ -86,7 +98,7 @@ pub fn extract_comment(path: &Path) -> Option<String> {
             }
         }
     }
-    None
+    md_header
 }
 
 pub fn dump_dir(
@@ -99,17 +111,16 @@ pub fn dump_dir(
     dirs_only: bool,
     ignore_re: Option<&Regex>,
     out: &mut dyn Write
-) {
+) -> io::Result<()> {
     if let Some(max) = max_level {
-        if level > max { return; }
+        if level > max { return Ok(()); }
     }
 
     let mut entries: Vec<PathBuf> = match fs::read_dir(curr) {
         Ok(read) => read.flatten().map(|e| e.path()).collect(),
-        Err(_) => return,
+        Err(e) => return Err(e),
     };
 
-    // Регистронезависимая сортировка (полный паритет с Python и tree)
     entries.sort_by(|a, b| {
         let a_dir = a.is_dir();
         let b_dir = b.is_dir();
@@ -157,10 +168,10 @@ pub fn dump_dir(
 
         if p.is_symlink() {
             let target = fs::read_link(p).unwrap_or_default();
-            let _ = writeln!(out, "{}{}{}{} -> {}", prefix, connector, size_tag, name, target.display());
+            writeln!(out, "{}{}{}{} -> {}", prefix, connector, size_tag, name, target.display())?;
         } else if p.is_dir() {
-            let _ = writeln!(out, "{}{}{}{}/", prefix, connector, size_tag, name);
-            dump_dir(root, p, &next_prefix, level + 1, max_level, show_sizes, dirs_only, ignore_re, out);
+            writeln!(out, "{}{}{}{}/", prefix, connector, size_tag, name)?;
+            dump_dir(root, p, &next_prefix, level + 1, max_level, show_sizes, dirs_only, ignore_re, out)?;
         } else {
             #[cfg(unix)]
             let is_exec = p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false);
@@ -169,7 +180,8 @@ pub fn dump_dir(
 
             let star = if is_exec { "*" } else { "" };
             let comment = extract_comment(p).map(|c| format!(" # {}", c)).unwrap_or_default();
-            let _ = writeln!(out, "{}{}{}{}{}{}", prefix, connector, size_tag, name, star, comment);
+            writeln!(out, "{}{}{}{}{}{}", prefix, connector, size_tag, name, star, comment)?;
         }
     }
+    Ok(())
 }

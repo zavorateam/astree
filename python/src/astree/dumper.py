@@ -28,7 +28,6 @@ def is_binary(path: Path) -> bool:
     return False
 
 def human_size(bytes_len: int) -> str:
-    """Форматирует размер строго без разрыва числа и единицы ([  1K], [1.2M])."""
     for unit in ['B', 'K', 'M', 'G', 'T']:
         if bytes_len < 1024:
             if unit == 'B':
@@ -44,6 +43,7 @@ def extract_comment(path: Path) -> str:
     if is_binary(path):
         return ""
     ext = path.suffix.lower()
+    md_header = None
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for _ in range(15):
@@ -54,7 +54,7 @@ def extract_comment(path: Path) -> str:
                 if not s or s.startswith("#!"):
                     continue
 
-                # Особый случай Rust: не воспринимаем атрибуты #[cfg(...)] как комментарии!
+                # Rust: строго только //, ///, //!, игнорируя атрибуты #[cfg(...)]
                 if ext == ".rs":
                     if s.startswith(("//!", "///")):
                         clean = s[3:].strip()
@@ -64,15 +64,25 @@ def extract_comment(path: Path) -> str:
                         return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', clean)[:80]
                     continue
 
+                # Markdown: если есть цитата-описание '> ...', она приоритетнее H1
+                if ext == ".md":
+                    if s.startswith(">"):
+                        clean = s.lstrip("> ").strip()
+                        return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', clean)[:80]
+                    if s.startswith("#") and md_header is None:
+                        md_header = s.lstrip("# ").strip()[:80]
+                    continue
+
                 if s.startswith(('"""', "'''")):
                     raw = s.strip("\"'").strip()
                     return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', raw)[:80]
-                if ext == ".md" and s.startswith("#"):
-                    return s.lstrip("# ").strip()[:80]
                 if s.startswith(("//", "#", "<!--", "--")):
                     raw = re.sub(r'^[#/\-<! ]+', '', s).rstrip('-> ').strip()
                     clean = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', raw)
                     return clean[:80]
+
+        if md_header:
+            return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', md_header)[:80]
     except Exception:
         pass
     return ""
@@ -92,7 +102,7 @@ def load_gitignore(root: Path) -> list[str]:
     return patterns
 
 def dump_tree(root: Path, current: Path, prefix="", level=1, max_level=None,
-              show_sizes=False, dirs_only=False, ignore_pat=None, gi_patterns=None):
+              show_sizes=False, dirs_only=False, ignore_pat=None, gi_patterns=None, out=None):
     if max_level is not None and level > max_level:
         return
 
@@ -100,9 +110,9 @@ def dump_tree(root: Path, current: Path, prefix="", level=1, max_level=None,
         gi_patterns = load_gitignore(root)
 
     try:
-        entries = sorted(list(current.iterdir()), key=lambda e: (not e.is_dir(), e.name.lower()))
-    except PermissionError:
-        return
+        entries = sorted(list(current.iterdir()), key=lambda e: (not e.is_dir(), e.name.lower(), e.name))
+    except PermissionError as e:
+        raise PermissionError(f"Cannot read directory '{current}': {e}")
 
     valid = []
     for entry in entries:
@@ -131,16 +141,18 @@ def dump_tree(root: Path, current: Path, prefix="", level=1, max_level=None,
             except Exception:
                 size_tag = "[   ?]  "
 
+        writer = out.write if out else print
+
         if entry.is_symlink():
             target = os.readlink(entry)
-            print(f"{prefix}{connector}{size_tag}{entry.name} -> {target}")
+            writer(f"{prefix}{connector}{size_tag}{entry.name} -> {target}\n" if out else f"{prefix}{connector}{size_tag}{entry.name} -> {target}")
         elif entry.is_dir():
-            print(f"{prefix}{connector}{size_tag}{entry.name}/")
+            writer(f"{prefix}{connector}{size_tag}{entry.name}/\n" if out else f"{prefix}{connector}{size_tag}{entry.name}/")
             dump_tree(root, entry, next_prefix, level + 1, max_level,
-                      show_sizes, dirs_only, ignore_pat, gi_patterns)
+                      show_sizes, dirs_only, ignore_pat, gi_patterns, out=out)
         else:
             is_exec = os.access(entry, os.X_OK)
             star = "*" if is_exec and entry.suffix in {".py", ".sh", ".bash"} else ""
             comment = extract_comment(entry)
             comment_str = f" # {comment}" if comment else ""
-            print(f"{prefix}{connector}{size_tag}{entry.name}{star}{comment_str}")
+            writer(f"{prefix}{connector}{size_tag}{entry.name}{star}{comment_str}\n" if out else f"{prefix}{connector}{size_tag}{entry.name}{star}{comment_str}")
