@@ -34,22 +34,50 @@ def test_path_traversal_protection(tmp_path):
     with pytest.raises(PermissionError):
         scaffold(tree.strip().splitlines(), target_dir=tmp_path)
 
-def test_intermediate_symlink_escape_protection(tmp_path):
-    # Создаем проект с симлинком на внешнюю директорию
+def test_root_symlink_escape_protection(tmp_path):
+    """РЕГРЕССИОННЫЙ ТЕСТ: корень дерева proj/ является внешним симлинком."""
     outside = tmp_path / "outside_dir"
     outside.mkdir()
-    project = tmp_path / "proj"
-    project.mkdir()
+    target_dir = tmp_path / "sandbox"
+    target_dir.mkdir()
 
-    symlink_path = project / "sub"
+    # target_dir/proj указывает на outside_dir
     import os
-    os.symlink(outside, symlink_path)
+    os.symlink(outside, target_dir / "proj")
 
-    # Попытка записать файл внутрь симлинка, ведущего наружу
+    tree = "proj/\n└── payload.sh\n"
+    with pytest.raises(PermissionError):
+        scaffold(tree.strip().splitlines(), target_dir=target_dir)
+
+    assert not (outside / "payload.sh").exists()
+
+def test_nested_symlink_escape_protection(tmp_path):
+    """РЕГРЕССИОННЫЙ ТЕСТ: вложенный симлинк внутри реального корня указывает наружу."""
+    outside = tmp_path / "outside_dir2"
+    outside.mkdir()
+    target_dir = tmp_path / "sandbox2"
+    target_dir.mkdir()
+    proj = target_dir / "proj"
+    proj.mkdir()
+
+    import os
+    os.symlink(outside, proj / "sub")
+
     tree = "proj/\n└── sub/payload.sh\n"
     with pytest.raises(PermissionError):
-        scaffold(tree.strip().splitlines(), target_dir=tmp_path)
+        scaffold(tree.strip().splitlines(), target_dir=target_dir)
+
     assert not (outside / "payload.sh").exists()
+
+def test_existing_real_directory_allowed(tmp_path):
+    """Разрешённый сценарий: корневой каталог уже реально существует на диске."""
+    target_dir = tmp_path / "sandbox3"
+    target_dir.mkdir()
+    (target_dir / "proj").mkdir()
+
+    tree = "proj/\n└── normal.txt\n"
+    scaffold(tree.strip().splitlines(), target_dir=target_dir)
+    assert (target_dir / "proj/normal.txt").exists()
 
 def test_dry_run_leaves_filesystem_untouched(tmp_path):
     tree = "dry_proj/\n├── file1.txt\n└── sub/\n    └── file2.txt\n"

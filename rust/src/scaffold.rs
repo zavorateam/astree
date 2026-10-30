@@ -52,11 +52,24 @@ pub fn validate_safe_path(base_dir: &Path, rel_path: &str, boundary: &Path) -> i
         ));
     }
 
+    let canonical_base = base_dir
+        .canonicalize()
+        .unwrap_or_else(|_| base_dir.to_path_buf());
     let canonical_boundary = boundary
         .canonicalize()
         .unwrap_or_else(|_| boundary.to_path_buf());
-    let mut curr = base_dir.to_path_buf();
 
+    if canonical_boundary.strip_prefix(&canonical_base).is_err() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "Security violation: boundary '{:?}' escapes trusted root '{:?}'",
+                canonical_boundary, canonical_base
+            ),
+        ));
+    }
+
+    let mut curr = base_dir.to_path_buf();
     let components: Vec<_> = p.components().collect();
     if components.is_empty() {
         return Ok(base_dir.to_path_buf());
@@ -77,7 +90,9 @@ pub fn validate_safe_path(base_dir: &Path, rel_path: &str, boundary: &Path) -> i
                         }
                     }
                 };
-                if resolved.strip_prefix(&canonical_boundary).is_err() {
+                if resolved.strip_prefix(&canonical_base).is_err()
+                    || resolved.strip_prefix(&canonical_boundary).is_err()
+                {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
                         format!("Security violation: intermediate symlink '{:?}' escapes root target boundary", curr),
@@ -154,7 +169,7 @@ pub fn safe_write_file(path: &Path, content: &str, is_exec: bool, force: bool) -
 
         let mut opts = OpenOptions::new();
         opts.write(true).create_new(true);
-        {
+        let write_res = (|| -> io::Result<()> {
             let mut f = opts.open(&temp_path)?;
             f.write_all(content.as_bytes())?;
             #[cfg(unix)]
@@ -163,8 +178,14 @@ pub fn safe_write_file(path: &Path, content: &str, is_exec: bool, force: bool) -
                 perms.set_mode(0o755);
                 f.set_permissions(perms)?;
             }
+            fs::rename(&temp_path, path)?;
+            Ok(())
+        })();
+
+        if write_res.is_err() {
+            let _ = fs::remove_file(&temp_path);
         }
-        fs::rename(temp_path, path)?;
+        write_res?;
     }
 
     Ok(())
@@ -205,6 +226,33 @@ pub fn scaffold(
             None => continue,
         };
 
+        if node.depth == 0 && has_root && node.is_dir {
+            root_name = node.name.clone();
+            let candidate = base_dir.join(&node.name);
+            if candidate.is_symlink() {
+                let resolved = match candidate.canonicalize() {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let target = fs::read_link(&candidate)?;
+                        if target.is_absolute() {
+                            target
+                        } else {
+                            base_dir.join(target)
+                        }
+                    }
+                };
+                if resolved.strip_prefix(&base_dir).is_err() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!("Security violation: root directory '{}' is an external symlink escaping target", node.name),
+                    ));
+                }
+                root_boundary = resolved;
+            } else {
+                root_boundary = candidate;
+            }
+        }
+
         let effective_depth = if has_root {
             node.depth
         } else {
@@ -227,9 +275,26 @@ pub fn scaffold(
 
         if node.is_dir {
             stack.push(node.name.clone());
-            if node.depth == 0 && has_root {
-                root_name = node.name.clone();
-                root_boundary = base_dir.join(&node.name);
+            if current_path.is_symlink() {
+                let resolved = match current_path.canonicalize() {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let target = fs::read_link(&current_path)?;
+                        if target.is_absolute() {
+                            target
+                        } else {
+                            current_path.parent().unwrap_or(&base_dir).join(target)
+                        }
+                    }
+                };
+                if resolved.strip_prefix(&base_dir).is_err()
+                    || resolved.strip_prefix(&root_boundary).is_err()
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!("Security violation: directory symlink '{:?}' escapes root target boundary", current_path),
+                    ));
+                }
             }
             if !dry_run {
                 if current_path.is_file() {
@@ -333,13 +398,25 @@ pub fn scaffold(
             out
         };
 
+        let parts: Vec<_> = current_path
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .collect();
+        let in_script_dir = parts
+            .iter()
+            .any(|&p| matches!(p, "scripts" | "bin" | "cli"));
+        let is_entrypoint = matches!(file_name, "main.py" | "app.py");
+        let should_exec_bit = node.is_exec
+            || matches!(ext, "sh" | "bash" | "zsh")
+            || (ext == "py" && (in_script_dir || is_entrypoint));
+
         if !dry_run {
-            safe_write_file(&current_path, &content, node.is_exec || ext == "sh", force)?;
+            safe_write_file(&current_path, &content, should_exec_bit, force)?;
         }
         println!(
             "[FILE] {}{}",
             rel_path,
-            if node.is_exec { " (+x)" } else { "" }
+            if should_exec_bit { " (+x)" } else { "" }
         );
     }
     Ok(())

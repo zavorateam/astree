@@ -59,20 +59,27 @@ def validate_safe_path(base_dir: Path, rel_path: str, boundary: Path | None = No
     if ".." in p.parts:
         raise PermissionError(f"Security violation: parent traversal '..' in '{rel_path}' is prohibited")
 
+    trusted_root = base_dir.resolve()
     effective_boundary = (boundary or base_dir).resolve()
-    
-    # Поэтапная проверка всех промежуточных директорий на побег через симлинки за границу проекта
+
+    if not effective_boundary.is_relative_to(trusted_root):
+        raise PermissionError(
+            f"Security violation: boundary '{effective_boundary}' escapes trusted root '{trusted_root}'"
+        )
+
+    # Проверка каждого каталога-предка
     curr = base_dir
     for part in p.parts[:-1]:
         curr = curr / part
         if curr.is_symlink():
             resolved_curr = curr.resolve()
-            if not resolved_curr.is_relative_to(effective_boundary):
+            if not resolved_curr.is_relative_to(trusted_root) or not resolved_curr.is_relative_to(effective_boundary):
                 raise PermissionError(
-                    f"Security violation: intermediate symlink '{curr}' escapes boundary '{effective_boundary}'"
+                    f"Security violation: intermediate symlink '{curr}' escapes root target boundary"
                 )
 
-    return base_dir / p
+    target = base_dir / p
+    return target
 
 def generate_content(path: Path, comment: str | None, inline_code: str | None,
                      project_name: str, is_exec: bool, no_shebang: bool, no_templates: bool) -> tuple[str, bool]:
@@ -92,16 +99,16 @@ def generate_content(path: Path, comment: str | None, inline_code: str | None,
             return TEMPLATES["gitignore"], False
 
     parts = path.parts
-    should_shebang = False
-    if not no_shebang:
-        if is_exec:
-            should_shebang = True
-        elif ext in {".sh", ".bash", ".zsh"}:
-            should_shebang = True
-            is_exec = True
-        elif ext == ".py" and (any(d in SCRIPT_DIRS for d in parts) or fname in {"main.py", "app.py"}):
-            should_shebang = True
-            is_exec = True
+    in_script_dir = any(d in SCRIPT_DIRS for d in parts)
+    is_entrypoint = fname in {"main.py", "app.py"}
+
+    should_shebang = not no_shebang and (
+        is_exec
+        or ext in {".sh", ".bash", ".zsh"}
+        or (ext == ".py" and (in_script_dir or is_entrypoint))
+    )
+
+    should_exec_bit = is_exec or ext in {".sh", ".bash", ".zsh"} or (ext == ".py" and (in_script_dir or is_entrypoint))
 
     lines = []
     if should_shebang and rule["shebang"]:
@@ -121,7 +128,7 @@ def generate_content(path: Path, comment: str | None, inline_code: str | None,
             lines.append(f'# {comment}')
 
     content = ("\n".join(lines) + "\n") if lines else ""
-    return content, is_exec
+    return content, should_exec_bit
 
 def safe_write_file(path: Path, content: str, is_exec: bool, force: bool):
     """Атомарная запись без TOCTOU-гонок и с разрывом существующих симлинков."""
@@ -129,22 +136,41 @@ def safe_write_file(path: Path, content: str, is_exec: bool, force: bool):
     parent.mkdir(parents=True, exist_ok=True)
 
     if not force:
+        if path.is_symlink():
+            raise FileExistsError(f"Symlink '{path}' already exists. Use --force to overwrite")
         try:
             with open(path, "x", encoding="utf-8") as f:
                 f.write(content)
         except FileExistsError:
-            raise FileExistsError(f"File or symlink '{path}' already exists. Use --force to overwrite")
+            raise FileExistsError(f"File '{path}' already exists. Use --force to overwrite")
     else:
         if path.exists() and path.is_dir() and not path.is_symlink():
             raise IsADirectoryError(f"Cannot overwrite directory '{path}' with a file")
 
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=parent, delete=False) as tf:
-            tf.write(content)
-            temp_name = tf.name
+        # Разрываем симлинк принудительно, исключая запись сквозь ссылку
+        if path.is_symlink():
+            path.unlink()
 
-        os.replace(temp_name, path)
+        temp_name = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=parent, delete=False) as tf:
+                temp_name = tf.name
+                tf.write(content)
 
-    if is_exec:
+            if is_exec:
+                current_mode = os.stat(temp_name).st_mode
+                os.chmod(temp_name, current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+            os.replace(temp_name, path)
+            temp_name = None
+        finally:
+            if temp_name and os.path.exists(temp_name):
+                try:
+                    os.unlink(temp_name)
+                except OSError:
+                    pass
+
+    if is_exec and not force:
         current_mode = os.stat(path).st_mode
         os.chmod(path, current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -154,7 +180,6 @@ def scaffold(lines: list[str], target_dir: Path = Path("."), dry_run=False, forc
     root_name = target_dir.name or "project"
     project_boundary = base_dir
 
-    # Определяем, имеет ли дерево корневую папку нулевого уровня
     has_root = False
     for raw in lines:
         node = parse_line(raw)
@@ -168,6 +193,19 @@ def scaffold(lines: list[str], target_dir: Path = Path("."), dry_run=False, forc
         if not node:
             continue
 
+        # ПРОВЕРКА КОРНЕВОГО СИМЛИНКА: Запрет расширения границы
+        if node.depth == 0 and has_root and node.is_dir:
+            candidate_root = base_dir / node.name
+            if candidate_root.is_symlink():
+                resolved_root = candidate_root.resolve()
+                if not resolved_root.is_relative_to(base_dir):
+                    raise PermissionError(
+                        f"Security violation: root directory '{node.name}' is an external symlink escaping target"
+                    )
+                project_boundary = resolved_root
+            else:
+                project_boundary = candidate_root.resolve()
+
         effective_depth = node.depth if has_root else max(0, node.depth - 1)
         stack = stack[:effective_depth]
         rel_path = os.path.join(*stack, node.name) if stack else node.name
@@ -175,9 +213,14 @@ def scaffold(lines: list[str], target_dir: Path = Path("."), dry_run=False, forc
 
         if node.is_dir:
             stack.append(node.name)
+            if current_path.is_symlink():
+                resolved = current_path.resolve()
+                if not resolved.is_relative_to(base_dir) or not resolved.is_relative_to(project_boundary):
+                    raise PermissionError(
+                        f"Security violation: directory symlink '{current_path}' escapes root target boundary"
+                    )
             if node.depth == 0 and has_root:
                 root_name = node.name
-                project_boundary = (base_dir / node.name).resolve()
             if not dry_run:
                 if current_path.is_file():
                     raise FileExistsError(f"Cannot create directory '{current_path}': file exists")

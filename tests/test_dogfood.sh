@@ -26,11 +26,9 @@ fi
 echo "=== 2. Проверка симметрии разворачивания (Scaffold parity через -t) ==="
 mkdir -p "${SANDBOX}/py_scaffold" "${SANDBOX}/rs_scaffold"
 
-# Разворачиваем структуру обоими движками через штатный флаг -t
 python3 -m astree.cli "${SANDBOX}/dump_py.txt" -t "${SANDBOX}/py_scaffold"
 "${RUST_BIN}" "${SANDBOX}/dump_rs.txt" -t "${SANDBOX}/rs_scaffold"
 
-# Снимаем дамп с обоих развёрнутых проектов и сравниваем
 python3 -m astree.cli dump "${SANDBOX}/py_scaffold" > "${SANDBOX}/res_py.txt"
 "${RUST_BIN}" dump "${SANDBOX}/rs_scaffold" > "${SANDBOX}/res_rs.txt"
 
@@ -44,45 +42,79 @@ else
     exit 1
 fi
 
-echo "=== 3. Проверка безопасности: блокировка Path Traversal ==="
-cd "${SANDBOX}"
-EVIL_TREE="evil_app/\n├── ../../evil.txt\n"
+echo "=== 3. Проверка безопасности: корневой симлинк (Root Symlink Escape) ==="
+OUTSIDE_ROOT="${SANDBOX}/outside_root"
+mkdir -p "${OUTSIDE_ROOT}"
+mkdir -p "${SANDBOX}/root_escape_py" "${SANDBOX}/root_escape_rs"
 
-if echo -e "$EVIL_TREE" | python3 -m astree.cli - 2>/dev/null; then
-    echo "[FAIL] Python не заблокировал относительный путь '..'!"
+ln -s "${OUTSIDE_ROOT}" "${SANDBOX}/root_escape_py/proj"
+ln -s "${OUTSIDE_ROOT}" "${SANDBOX}/root_escape_rs/proj"
+
+TREE_ROOT_ESCAPE="proj/\n└── root_payload.sh\n"
+
+if printf "%b" "$TREE_ROOT_ESCAPE" | python3 -m astree.cli -t "${SANDBOX}/root_escape_py" - 2>/dev/null; then
+    echo "[FAIL] Python разрешил побег через корневой симлинк!"
     exit 1
 fi
 
-if echo -e "$EVIL_TREE" | "${RUST_BIN}" - 2>/dev/null; then
-    echo "[FAIL] Rust не заблокировал относительный путь '..'!"
+if printf "%b" "$TREE_ROOT_ESCAPE" | "${RUST_BIN}" -t "${SANDBOX}/root_escape_rs" - 2>/dev/null; then
+    echo "[FAIL] Rust разрешил побег через корневой симлинк!"
     exit 1
 fi
 
-if [ -f "${SANDBOX}/evil.txt" ] || [ -f "${REPO_ROOT}/evil.txt" ]; then
-    echo "[FAIL] Файл был создан за пределами корня проекта!"
+if [ -f "${OUTSIDE_ROOT}/root_payload.sh" ]; then
+    echo "[FAIL] root_payload.sh был создан во внешней директории!"
     exit 1
 fi
-echo "[PASS] Оба движка блокируют Path Traversal без утечки файлов"
+echo "[PASS] Оба движка блокируют побег через корневой симлинк"
 
-echo "=== 4. Проверка защиты от перезаписи без --force ==="
-mkdir -p "${SANDBOX}/guard_test"
-echo "sensitive data" > "${SANDBOX}/guard_test/file.txt"
-OVERWRITE_TREE="guard_test/\n├── file.txt\n"
+echo "=== 4. Проверка безопасности: конечный симлинк (Leaf Symlink Hijacking) ==="
+mkdir -p "${SANDBOX}/leaf_test"
+OUTSIDE_TARGET="${SANDBOX}/outside_leaf_file.txt"
+echo "precious original" > "${OUTSIDE_TARGET}"
+ln -s "${OUTSIDE_TARGET}" "${SANDBOX}/leaf_test/link.txt"
 
-if echo -e "$OVERWRITE_TREE" | python3 -m astree.cli - 2>/dev/null; then
-    echo "[FAIL] Python перезаписал существующий файл без --force!"
+LEAF_TREE="leaf_test/\n├── link.txt # = overwritten\n"
+
+if printf "%b" "$LEAF_TREE" | python3 -m astree.cli -t "${SANDBOX}" - 2>/dev/null; then
+    echo "[FAIL] Python перезаписал симлинк без --force!"
+    exit 1
+fi
+if printf "%b" "$LEAF_TREE" | "${RUST_BIN}" -t "${SANDBOX}" - 2>/dev/null; then
+    echo "[FAIL] Rust перезаписал симлинк без --force!"
     exit 1
 fi
 
-if echo -e "$OVERWRITE_TREE" | "${RUST_BIN}" - 2>/dev/null; then
-    echo "[FAIL] Rust перезаписал существующий файл без --force!"
+if [ "$(cat "${OUTSIDE_TARGET}")" != "precious original" ]; then
+    echo "[FAIL] Файл-мишень симлинка был изменён без --force!"
     exit 1
 fi
 
-if [ "$(cat "${SANDBOX}/guard_test/file.txt")" != "sensitive data" ]; then
-    echo "[FAIL] Исходные данные были перезаписаны!"
+printf "%b" "$LEAF_TREE" | "${RUST_BIN}" -t "${SANDBOX}" -f - >/dev/null
+if [ "$(cat "${OUTSIDE_TARGET}")" != "precious original" ]; then
+    echo "[FAIL] Файл-мишень симлинка был изменён даже при --force!"
     exit 1
 fi
-echo "[PASS] Данные надёжно защищены от перезаписи без флага --force"
+if [ -L "${SANDBOX}/leaf_test/link.txt" ]; then
+    echo "[FAIL] Симлинк не был разорван при --force!"
+    exit 1
+fi
+echo "[PASS] Защита от Symlink Hijacking подтверждена (мишень не затронута)"
 
-echo "=== Все фазы Dogfood-тестирования завершены успешно! ==="
+echo "=== 5. Проверка сохранения скобок [notes] и путей с пробелами ==="
+mkdir -p "${SANDBOX}/spaces_test"
+SPACE_TREE="spaces_proj/\n├── [notes] file.txt\n├── my script.py*\n└── sub folder/\n    └── spaced file.txt\n"
+
+printf "%b" "$SPACE_TREE" | "${RUST_BIN}" -t "${SANDBOX}/spaces_test" - >/dev/null
+
+if [ ! -f "${SANDBOX}/spaces_test/spaces_proj/[notes] file.txt" ]; then
+    echo "[FAIL] Файл [notes] file.txt был искажён!"
+    exit 1
+fi
+if [ ! -x "${SANDBOX}/spaces_test/spaces_proj/my script.py" ]; then
+    echo "[FAIL] my script.py не получил права на исполнение!"
+    exit 1
+fi
+echo "[PASS] Имена в скобках [notes] и пути с пробелами обработаны корректно"
+
+echo "=== Все проверки E2E Dogfood успешно завершены! ==="

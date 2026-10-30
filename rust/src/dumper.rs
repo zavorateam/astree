@@ -20,8 +20,33 @@ pub fn is_binary(path: &Path) -> bool {
         .unwrap_or("")
         .to_lowercase();
     let binary_exts = [
-        "o", "a", "so", "dylib", "dll", "exe", "bin", "lock", "pyc", "pyd", "wasm", "png", "jpg",
-        "jpeg", "gif", "ico", "pdf", "zip", "tar", "gz", "bz2", "xz", "7z", "rlib", "d",
+        "o",
+        "a",
+        "so",
+        "dylib",
+        "dll",
+        "exe",
+        "bin",
+        "lock",
+        "pyc",
+        "pyd",
+        "wasm",
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "ico",
+        "pdf",
+        "zip",
+        "tar",
+        "gz",
+        "bz2",
+        "xz",
+        "7z",
+        "rlib",
+        "d",
+        "pdb",
+        "timestamp",
     ];
     if binary_exts.contains(&ext.as_str()) {
         return true;
@@ -38,17 +63,17 @@ pub fn is_binary(path: &Path) -> bool {
 }
 
 pub fn format_size(bytes: u64) -> String {
-    let units = ["B", "K", "M", "G", "T"];
+    let units = ["B", "K", "M", "G", "T", "P"];
     let mut b = bytes as f64;
     for (i, u) in units.iter().enumerate() {
-        if b < 1024.0 {
+        if b < 1024.0 || i == units.len() - 1 {
             if i == 0 {
                 return format!("[{:>4}B]", bytes);
             }
             if b < 10.0 {
                 return format!("[{:>4.1}{}]", b, u);
             }
-            return format!("[{:>4.0}{}]", b, u);
+            return format!("[{:>4.0}{}]", b.round(), u);
         }
         b /= 1024.0;
     }
@@ -121,29 +146,93 @@ pub fn extract_comment(path: &Path) -> Option<String> {
     md_header
 }
 
-pub fn load_gitignore(root: &Path) -> Vec<String> {
-    let mut patterns = Vec::new();
+pub struct GitIgnoreRule {
+    pub is_negated: bool,
+    pub is_dir_only: bool,
+    pub has_slash: bool,
+    pub regex: Regex,
+}
+
+fn glob_to_regex(pat: &str, has_slash: bool) -> Result<Regex, regex::Error> {
+    let mut re_str = String::from("^");
+    let mut chars = pat.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                if chars.peek() == Some(&'*') {
+                    chars.next();
+                    if chars.peek() == Some(&'/') {
+                        chars.next();
+                    }
+                    re_str.push_str(".*");
+                } else if has_slash {
+                    re_str.push_str("[^/]*");
+                } else {
+                    re_str.push_str(".*");
+                }
+            }
+            '?' => re_str.push('.'),
+            '.' | '+' | '(' | ')' | '{' | '}' | '|' | '^' | '$' | '\\' => {
+                re_str.push('\\');
+                re_str.push(c);
+            }
+            _ => re_str.push(c),
+        }
+    }
+    re_str.push('$');
+    Regex::new(&re_str)
+}
+
+pub fn load_gitignore_rules(root: &Path) -> Vec<GitIgnoreRule> {
+    let mut rules = Vec::new();
     let gi = root.join(".gitignore");
     if let Ok(file) = File::open(gi) {
         let reader = BufReader::new(file);
         for line in reader.lines().map_while(Result::ok) {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                patterns.push(trimmed.trim_matches('/').to_string());
+            let mut trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let mut is_negated = false;
+            if let Some(rest) = trimmed.strip_prefix('!') {
+                is_negated = true;
+                trimmed = rest.trim();
+            }
+            if trimmed.is_empty() {
+                continue;
+            }
+            let is_dir_only = trimmed.ends_with('/');
+            let clean_pat = trimmed.trim_matches('/');
+            let has_slash = clean_pat.contains('/');
+            if let Ok(regex) = glob_to_regex(clean_pat, has_slash) {
+                rules.push(GitIgnoreRule {
+                    is_negated,
+                    is_dir_only,
+                    has_slash,
+                    regex,
+                });
             }
         }
     }
-    patterns
+    rules
 }
 
-fn glob_match(pattern: &str, text: &str) -> bool {
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        text.ends_with(suffix)
-    } else if let Some(prefix) = pattern.strip_suffix('*') {
-        text.starts_with(prefix)
-    } else {
-        pattern == text
+pub fn is_path_ignored(name: &str, rel_path: &str, is_dir: bool, rules: &[GitIgnoreRule]) -> bool {
+    let mut ignored = false;
+    for rule in rules {
+        if rule.is_dir_only && !is_dir {
+            continue;
+        }
+        let matched = if rule.has_slash {
+            rule.regex.is_match(rel_path)
+        } else {
+            rule.regex.is_match(name) || rule.regex.is_match(rel_path)
+        };
+        if matched {
+            ignored = !rule.is_negated;
+        }
     }
+    ignored
 }
 
 pub fn dump_dir(
@@ -187,7 +276,7 @@ pub fn dump_dir(
         "__pycache__",
         ".pytest_cache",
     ];
-    let gi_patterns = load_gitignore(root);
+    let gi_rules = load_gitignore_rules(root);
 
     let valid: Vec<PathBuf> = entries
         .into_iter()
@@ -206,10 +295,8 @@ pub fn dump_dir(
                 .ok()
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
-            for pat in &gi_patterns {
-                if name == pat || rel == pat || glob_match(pat, name) || glob_match(pat, rel) {
-                    return false;
-                }
+            if is_path_ignored(name, rel, p.is_dir(), &gi_rules) {
+                return false;
             }
             if options.dirs_only && !p.is_dir() {
                 return false;

@@ -13,8 +13,9 @@ class ParsedNode:
     inline_code: Optional[str] = None
 
 def strip_metadata_prefixes(line: str) -> str:
-    """Удаляет метаданные размеров из вывода tree -h (например, [ 21K], [  1K], [ 1.2M])."""
-    return re.sub(r'(\s*[│├└─\s]+)\[\s*[\d\.]+\s*[BKMGTPEZY]?\s*\]\s+', r'\1', line)
+    """Удаляет только валидные префиксы размера tree -h ([ 21K], [  96], [ 1.4K]).
+    Имена файлов в квадратных скобках (напр. [notes] file.txt) не затрагиваются."""
+    return re.sub(r'(\s*[│├└─\s]+)\[\s*\d+(?:\.\d+)?\s*[BKMGTPEZY]?\s*\]\s+', r'\1', line)
 
 def clean_input_lines(raw_text: str) -> list[str]:
     """Извлекает дерево каталогов из Markdown-блоков или сырого текста."""

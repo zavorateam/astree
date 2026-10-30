@@ -9,11 +9,74 @@ pub struct ParsedNode {
     pub inline_code: Option<String>,
 }
 
+fn is_size_pattern(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let mut chars = trimmed.chars().peekable();
+    let mut has_digits = false;
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            has_digits = true;
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    if !has_digits {
+        return false;
+    }
+    if chars.peek() == Some(&'.') {
+        chars.next();
+        let mut has_dec = false;
+        while let Some(&c) = chars.peek() {
+            if c.is_ascii_digit() {
+                has_dec = true;
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if !has_dec {
+            return false;
+        }
+    }
+    if let Some(&c) = chars.peek() {
+        if matches!(
+            c,
+            'B' | 'K'
+                | 'M'
+                | 'G'
+                | 'T'
+                | 'P'
+                | 'E'
+                | 'Z'
+                | 'Y'
+                | 'b'
+                | 'k'
+                | 'm'
+                | 'g'
+                | 't'
+                | 'p'
+                | 'e'
+                | 'z'
+                | 'y'
+        ) {
+            chars.next();
+        }
+    }
+    chars.peek().is_none()
+}
+
 pub fn strip_size_prefix(s: &str) -> &str {
     let trimmed = s.trim_start();
     if let Some(rest) = trimmed.strip_prefix('[') {
         if let Some(idx) = rest.find(']') {
-            return rest[idx + 1..].trim_start();
+            let inside = &rest[..idx];
+            if is_size_pattern(inside) {
+                return rest[idx + 1..].trim_start();
+            }
         }
     }
     s
