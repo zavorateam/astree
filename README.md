@@ -27,7 +27,7 @@ my_service/
 ├── scripts/
 │   └── migrate.py*             # получит shebang #!/usr/bin/env python3 и chmod +x
 └── src/
-    ├── __init__.py             # = __version__ = "0.2.2"
+    ├── __init__.py             # = __version__ = "0.2.3"
     └── server.py               # service entrypoint
 EOF
 ```

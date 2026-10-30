@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astree"
-version = "0.2.2"
+version = "0.2.3"
 description = "Reverse-tree CLI generator with smart shebangs, templates and safe dumper."
 readme = "README.md"
 requires-python = ">=3.10"

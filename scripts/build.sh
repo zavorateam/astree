@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${REPO_ROOT}/build"
-BASE_VERSION="0.2.2"
+BASE_VERSION="0.2.3"
 
 MODE="dev"
 DO_INSTALL=false
