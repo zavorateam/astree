@@ -70,10 +70,12 @@ pub fn format_size(bytes: u64) -> String {
             if i == 0 {
                 return format!("[{:>4}B]", bytes);
             }
-            if b < 10.0 {
-                return format!("[{:>4.1}{}]", b, u);
+            if b < 9.95 {
+                let rounded = (b * 10.0).round() / 10.0;
+                return format!("[{:>4.1}{}]", rounded, u);
             }
-            return format!("[{:>4.0}{}]", b.round(), u);
+            let rounded_int = (b + 0.5).floor() as u64;
+            return format!("[{:>4}{}]", rounded_int, u);
         }
         b /= 1024.0;
     }
@@ -153,7 +155,7 @@ pub struct GitIgnoreRule {
     pub regex: Regex,
 }
 
-fn glob_to_regex(pat: &str, has_slash: bool) -> Result<Regex, regex::Error> {
+fn glob_to_regex(pat: &str) -> Result<Regex, regex::Error> {
     let mut re_str = String::from("^");
     let mut chars = pat.chars().peekable();
     while let Some(c) = chars.next() {
@@ -163,16 +165,16 @@ fn glob_to_regex(pat: &str, has_slash: bool) -> Result<Regex, regex::Error> {
                     chars.next();
                     if chars.peek() == Some(&'/') {
                         chars.next();
+                        re_str.push_str("(?:.+/)?");
+                    } else {
+                        re_str.push_str(".*");
                     }
-                    re_str.push_str(".*");
-                } else if has_slash {
-                    re_str.push_str("[^/]*");
                 } else {
-                    re_str.push_str(".*");
+                    re_str.push_str("[^/]*");
                 }
             }
-            '?' => re_str.push('.'),
-            '.' | '+' | '(' | ')' | '{' | '}' | '|' | '^' | '$' | '\\' => {
+            '?' => re_str.push_str("[^/]"),
+            '.' | '+' | '(' | ')' | '{' | '}' | '|' | '^' | '$' | '\\' | '[' | ']' => {
                 re_str.push('\\');
                 re_str.push(c);
             }
@@ -204,7 +206,7 @@ pub fn load_gitignore_rules(root: &Path) -> Vec<GitIgnoreRule> {
             let is_dir_only = trimmed.ends_with('/');
             let clean_pat = trimmed.trim_matches('/');
             let has_slash = clean_pat.contains('/');
-            if let Ok(regex) = glob_to_regex(clean_pat, has_slash) {
+            if let Ok(regex) = glob_to_regex(clean_pat) {
                 rules.push(GitIgnoreRule {
                     is_negated,
                     is_dir_only,

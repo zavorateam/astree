@@ -67,7 +67,6 @@ def validate_safe_path(base_dir: Path, rel_path: str, boundary: Path | None = No
             f"Security violation: boundary '{effective_boundary}' escapes trusted root '{trusted_root}'"
         )
 
-    # Проверка каждого каталога-предка
     curr = base_dir
     for part in p.parts[:-1]:
         curr = curr / part
@@ -78,8 +77,7 @@ def validate_safe_path(base_dir: Path, rel_path: str, boundary: Path | None = No
                     f"Security violation: intermediate symlink '{curr}' escapes root target boundary"
                 )
 
-    target = base_dir / p
-    return target
+    return base_dir / p
 
 def generate_content(path: Path, comment: str | None, inline_code: str | None,
                      project_name: str, is_exec: bool, no_shebang: bool, no_templates: bool) -> tuple[str, bool]:
@@ -87,8 +85,15 @@ def generate_content(path: Path, comment: str | None, inline_code: str | None,
     fname = path.name
     rule = LANGUAGE_RULES.get(ext, {"shebang": None, "style": "hash"})
 
+    parts = path.parts
+    in_script_dir = any(d in SCRIPT_DIRS for d in parts)
+    is_entrypoint = fname in {"main.py", "app.py"}
+
+    should_exec_bit = is_exec or ext in {".sh", ".bash", ".zsh"} or (ext == ".py" and (in_script_dir or is_entrypoint))
+
+    # P3: inline_code не должен обходить правила executable bit
     if inline_code is not None:
-        return inline_code + "\n", is_exec
+        return inline_code + "\n", should_exec_bit
 
     if not no_templates:
         if fname == "pyproject.toml":
@@ -98,17 +103,11 @@ def generate_content(path: Path, comment: str | None, inline_code: str | None,
         if fname == ".gitignore":
             return TEMPLATES["gitignore"], False
 
-    parts = path.parts
-    in_script_dir = any(d in SCRIPT_DIRS for d in parts)
-    is_entrypoint = fname in {"main.py", "app.py"}
-
     should_shebang = not no_shebang and (
         is_exec
         or ext in {".sh", ".bash", ".zsh"}
         or (ext == ".py" and (in_script_dir or is_entrypoint))
     )
-
-    should_exec_bit = is_exec or ext in {".sh", ".bash", ".zsh"} or (ext == ".py" and (in_script_dir or is_entrypoint))
 
     lines = []
     if should_shebang and rule["shebang"]:
@@ -131,7 +130,7 @@ def generate_content(path: Path, comment: str | None, inline_code: str | None,
     return content, should_exec_bit
 
 def safe_write_file(path: Path, content: str, is_exec: bool, force: bool):
-    """Атомарная запись без TOCTOU-гонок и с разрывом существующих симлинков."""
+    """Атомарная запись без TOCTOU-гонок и с безопасным разрывом симлинков."""
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
 
@@ -147,7 +146,7 @@ def safe_write_file(path: Path, content: str, is_exec: bool, force: bool):
         if path.exists() and path.is_dir() and not path.is_symlink():
             raise IsADirectoryError(f"Cannot overwrite directory '{path}' with a file")
 
-        # Разрываем симлинк принудительно, исключая запись сквозь ссылку
+        # P4: разрываем симлинк принудительно, исключая запись сквозь ссылку
         if path.is_symlink():
             path.unlink()
 
@@ -193,7 +192,6 @@ def scaffold(lines: list[str], target_dir: Path = Path("."), dry_run=False, forc
         if not node:
             continue
 
-        # ПРОВЕРКА КОРНЕВОГО СИМЛИНКА: Запрет расширения границы
         if node.depth == 0 and has_root and node.is_dir:
             candidate_root = base_dir / node.name
             if candidate_root.is_symlink():

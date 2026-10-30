@@ -1,4 +1,4 @@
-import fnmatch
+import math
 import os
 import re
 from pathlib import Path
@@ -28,16 +28,18 @@ def is_binary(path: Path) -> bool:
     return False
 
 def human_size(n_bytes: int) -> str:
-    """Форматирует размер идентично Rust format_size: [   0B], [ 1.5K], [  12K], [ 1.0M]."""
+    """P6: Единое округление human-readable размеров (round-half-up / away-from-zero)."""
     units = ['B', 'K', 'M', 'G', 'T', 'P']
     val = float(n_bytes)
     for i, unit in enumerate(units):
         if val < 1024.0 or i == len(units) - 1:
             if i == 0:
                 return f"[{n_bytes:>4}B]"
-            if val < 10.0:
-                return f"[{val:>4.1f}{unit}]"
-            return f"[{int(round(val)):>4}{unit}]"
+            if val < 9.95:
+                rounded = math.floor(val * 10.0 + 0.5) / 10.0
+                return f"[{rounded:>4.1f}{unit}]"
+            rounded_int = int(math.floor(val + 0.5))
+            return f"[{rounded_int:>4}{unit}]"
         val /= 1024.0
     return f"[{val:>4.1f}P]"
 
@@ -87,9 +89,39 @@ def extract_comment(path: Path) -> str:
         pass
     return ""
 
+def glob_to_regex(pat: str) -> re.Pattern:
+    """P5: Трансляция glob-шаблона в Regex, где '*' не пересекает '/'."""
+    re_str = ["^"]
+    i = 0
+    n = len(pat)
+    while i < n:
+        c = pat[i]
+        if c == "*":
+            if i + 1 < n and pat[i + 1] == "*":
+                i += 2
+                if i < n and pat[i] == "/":
+                    i += 1
+                    re_str.append("(?:.+/)?")
+                else:
+                    re_str.append(".*")
+            else:
+                i += 1
+                re_str.append("[^/]*")
+        elif c == "?":
+            i += 1
+            re_str.append("[^/]")
+        elif c in r".+()[]{}\|^$":
+            re_str.append("\\" + c)
+            i += 1
+        else:
+            re_str.append(c)
+            i += 1
+    re_str.append("$")
+    return re.compile("".join(re_str))
+
 class GitIgnoreRules:
     def __init__(self, root: Path):
-        self.rules: list[tuple[bool, bool, str]] = []
+        self.rules: list[tuple[bool, bool, bool, re.Pattern]] = []
         gi = root / ".gitignore"
         if gi.is_file():
             try:
@@ -106,21 +138,23 @@ class GitIgnoreRules:
                             continue
                         is_dir_only = line.endswith("/")
                         pat = line.strip("/")
-                        self.rules.append((is_neg, is_dir_only, pat))
+                        has_slash = "/" in pat
+                        regex = glob_to_regex(pat)
+                        self.rules.append((is_neg, is_dir_only, has_slash, regex))
             except Exception:
                 pass
 
     def is_ignored(self, name: str, rel_path: str, is_dir: bool) -> bool:
         ignored = False
-        for is_neg, is_dir_only, pat in self.rules:
+        for is_neg, is_dir_only, has_slash, regex in self.rules:
             if is_dir_only and not is_dir:
                 continue
             matched = False
-            if "/" in pat:
-                if fnmatch.fnmatch(rel_path, pat) or fnmatch.fnmatch(rel_path, pat + "/*"):
+            if has_slash:
+                if regex.match(rel_path):
                     matched = True
             else:
-                if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(rel_path, pat):
+                if regex.match(name) or regex.match(rel_path):
                     matched = True
             if matched:
                 ignored = not is_neg
